@@ -33,6 +33,25 @@ function fixture(t) {
 const file = (name, text) => ({ name, bytes: [...Buffer.from(text)] });
 const revisions = (assets) =>
   Object.fromEntries(assets.map((a) => [a.id, a.revision]));
+test("desktop backup optionally includes trash and restores retained originals", (t) => {
+  const f = fixture(t);
+  let snap = f.repo.importFiles({ projectId: f.projectId, files: [file("留存.txt", "keep"), file("回收.txt", "trash")] });
+  const trashed = snap.assets.find(a => a.name === "回收.txt");
+  snap = f.repo.trashAssets({ projectId: f.projectId, ids: [trashed.id], revisions: revisions(snap.assets) });
+  const complete = f.repo.safety.create(f.projectId);
+  const partial = f.repo.safety.create(f.projectId, false);
+  assert.equal(complete.trashCount, 1);
+  assert.equal(partial.trashCount, 0);
+  const fullRestored = f.repo.safety.restore({ projectId: f.projectId, backupId: complete.id, destination: path.join(f.root, "full") });
+  const partialRestored = f.repo.safety.restore({ projectId: f.projectId, backupId: partial.id, destination: path.join(f.root, "partial") });
+  assert.equal(fullRestored.assets.filter(a => a.trashedAt).length, 1);
+  assert.equal(partialRestored.assets.length, 1);
+  const recoveredTrash = fullRestored.assets.find(a => a.trashedAt);
+  const returned = f.repo.restoreAssets({ projectId: fullRestored.project.id, ids: [recoveredTrash.id], revisions: revisions(fullRestored.assets) });
+  assert.equal(returned.assets.find(a => a.id === recoveredTrash.id).trashedAt, undefined);
+  assert.equal(fs.readFileSync(path.join(fullRestored.project.root, recoveredTrash.relativePath), "utf8"), "trash");
+  assert.equal(f.repo.snapshot(f.projectId).assets.length, 2);
+});
 function importOne(f, name = "hello.txt", content = "Hello") {
   return f.repo.importFiles({
     projectId: f.projectId,

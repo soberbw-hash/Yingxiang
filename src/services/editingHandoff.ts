@@ -2,7 +2,7 @@ import type { Asset, EditDocument } from "../types";
 import { validateEditing } from "../../shared/editing.mjs";
 import { createZip, type ZipEntry } from "./zip.ts";
 import { hashBlob, safePart } from "./directoryFiles.ts";
-import { syncStackLinks } from "../../shared/asset-stacks.mjs";
+import { stackMembers, syncStackLinks } from "../../shared/asset-stacks.mjs";
 
 const html = (value: string) =>
   value.replace(
@@ -124,6 +124,88 @@ export async function buildEditingHandoff(
     name: `${safePart(doc.title)}-剪辑交接.zip`,
   };
 }
+
+/** Export only the current video references used by the editing document. */
+export function planEditingVideos(
+  document: EditDocument,
+  assets: Asset[],
+) {
+  const doc = validateEditing(syncStackLinks(document, assets, false), assets);
+  const active = new Map(
+    assets.filter((asset) => !asset.trashedAt).map((asset) => [asset.id, asset]),
+  );
+  const all = new Map(assets.map((asset) => [asset.id, asset]));
+  const videos: { paragraph: number; asset: Asset; option: number; options: number }[] = [];
+
+  doc.paragraphs.forEach((paragraph, paragraphIndex) => {
+    const candidates: Asset[] = [];
+    const seenGroups = new Set<string>();
+    for (const link of paragraph.links) {
+      const linked = all.get(link.assetId);
+      if (!linked || linked.kind !== "video") continue;
+      if (linked.trashedAt || !active.has(linked.id))
+        throw new Error(`第 ${paragraphIndex + 1} 段关联的视频已在回收站，请恢复或解除关联`);
+      const groupKey = linked.stackId || linked.id;
+      if (seenGroups.has(groupKey)) continue;
+      seenGroups.add(groupKey);
+      const current = linked.stackId ? stackMembers(linked, assets)[0] : linked;
+      if (!current || current.trashedAt)
+        throw new Error(`第 ${paragraphIndex + 1} 段的视频版本不可用`);
+      candidates.push(current);
+    }
+    candidates.forEach((asset, index) =>
+      videos.push({
+        paragraph: paragraphIndex + 1,
+        asset,
+        option: index + 1,
+        options: candidates.length,
+      }),
+    );
+  });
+
+  const width = Math.max(2, String(doc.paragraphs.length).length);
+  const files = videos.map(item => {
+    const { asset } = item;
+    const dot = asset.name.lastIndexOf(".");
+    const ext = asset.name.slice(dot + 1).toLowerCase();
+    if (dot < 1 || !/^[a-z0-9]{1,10}$/.test(ext))
+      throw new Error(`视频扩展名无效：${asset.name}`);
+    const prefix = String(item.paragraph).padStart(width, "0") +
+      (item.options > 1 ? `-${item.option}` : "");
+    const filename = `${prefix}_${safePart(asset.name.slice(0, dot))}.${ext}`;
+    return { ...item, filename };
+  });
+  const linked = new Set(files.map(file => file.paragraph));
+  return { files, totalBytes: files.reduce((sum, file) => sum + file.asset.size, 0),
+    withoutVideo: doc.paragraphs.map((_, i) => i + 1).filter(number => !linked.has(number)) };
+}
+
+export async function buildEditingVideos(
+  document: EditDocument,
+  assets: Asset[],
+  read: (asset: Asset) => Promise<Blob>,
+) {
+  const plan = planEditingVideos(document, assets);
+  if (!plan.files.length) throw new Error("剪辑对照里还没有关联视频可导出");
+  if (plan.totalBytes > 300 * 1024 * 1024)
+    throw new Error("关联视频超过 300 MB，请分批导出；本机浏览器打包需要内存，未生成不完整的包");
+  const entries: ZipEntry[] = [];
+  for (const { asset, filename } of plan.files) {
+    const blob = await read(asset);
+    if (blob.size !== asset.size || (await hashBlob(blob)) !== asset.hash)
+      throw new Error(`原片校验失败：${asset.name}，未导出错误文件`);
+    entries.push({
+      name: `剪辑视频/${filename}`,
+      bytes: new Uint8Array(await blob.arrayBuffer()),
+    });
+  }
+  return {
+    blob: createZip(entries),
+    fileCount: entries.length,
+    name: `${safePart(document.title)}-剪辑视频.zip`,
+  };
+}
+
 export function downloadHandoff(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob),
     link = document.createElement("a");

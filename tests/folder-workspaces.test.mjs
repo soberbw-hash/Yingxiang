@@ -1032,6 +1032,22 @@ test("existing folder link is read-only and traversals, denied grants and bad ha
   root.control.permission = "denied";
   await assert.rejects(directoryPermission(root, true), /授权已失效/);
 });
+test("an existing image folder can become a managed public library without replacing its originals", async (t) => {
+  const root = await fixture(t);
+  await writeDiskFile(root, "角色/既有角色.png", new Blob([png]));
+  await writeDiskFile(root, "_Weave/目录说明.txt", "已有说明");
+  const id = await initializeLibrary(root);
+  assert.equal((await librarySnapshot(root)).id, id);
+  const state = new Map();
+  await syncLibraryDirectory(root, state, 1000, "test-client");
+  const result = await syncLibraryDirectory(root, state, 5000, "test-client");
+  assert.equal(result.snapshot.assets.length, 1);
+  assert.deepEqual(Buffer.from(await (await readDiskFile(root, "角色/既有角色.png")).arrayBuffer()), png);
+  assert.equal(await (await readDiskFile(root, "_Weave/目录说明.txt")).text(), "已有说明");
+  const edited = await editSharedAsset(root, "test-client", result.snapshot.assets[0], { group: "scene" });
+  assert.ok(edited);
+  assert.deepEqual(Buffer.from(await (await readDiskFile(root, "角色/既有角色.png")).arrayBuffer()), png);
+});
 test("browser legacy project remains intact; disk copy saves and failed writes roll working cache back", async (t) => {
   const parent = await fixture(t);
   const created = await browserInvoke("createProject", {
@@ -1103,10 +1119,43 @@ test("direct public image import validates file signature and preserves original
   );
   assert.equal(input.asset.hash, await hashBlob(new Blob([png])));
   assert.deepEqual(Buffer.from(await input.blob.arrayBuffer()), png);
+  const mislabeled = await imageLibraryInput(new File([png], "实际是图片.jpeg"));
+  assert.equal(mislabeled.asset.name, "实际是图片.png");
+  assert.equal(mislabeled.asset.mime, "image/png");
+  assert.deepEqual(Buffer.from(await mislabeled.blob.arrayBuffer()), png);
   await assert.rejects(
     imageLibraryInput(new File(["not a photo"], "假图.png")),
     /不是兼容的图片/,
   );
+});
+test("public library preserves existing folder names for new and previously collected images", async (t) => {
+  const root = await fixture(t);
+  await initializeLibrary(root);
+  await writeDiskFile(root, "自定义分类/图片.jpeg", new Blob([png]));
+  const state = new Map();
+  await syncLibraryDirectory(root, state, 1000);
+  const collected = await syncLibraryDirectory(root, state, 5000);
+  assert.equal(collected.added, 1);
+  assert.equal(collected.snapshot.assets[0].sourceFolder, "自定义分类");
+  assert.ok(collected.snapshot.folders.includes("自定义分类"));
+  assert.equal(collected.snapshot.assets[0].name, "图片.png");
+  assert.deepEqual(Buffer.from(await (await readDiskFile(root, "自定义分类/图片.jpeg")).arrayBuffer()), png);
+  assert.equal((await librarySnapshot(root)).assets[0].sourceFolder, "自定义分类");
+  const edited = await editSharedAsset(root, "client", collected.snapshot.assets[0], { group: "scene" });
+  assert.equal(edited.entry.sourceFolder, undefined);
+  const refreshed = await syncLibraryDirectory(root, state, 9000);
+  assert.equal(refreshed.snapshot.assets[0].sourceFolder, undefined);
+});
+test("legacy collected public images recover an unambiguous original folder for browsing", async (t) => {
+  const root = await fixture(t);
+  await initializeLibrary(root);
+  await writeDiskFile(root, "品牌素材/图片.png", new Blob([png]));
+  await publishToLibrary(root, "old", [await imageLibraryInput(new File([png], "图片.png"))]);
+  const state = new Map();
+  await syncLibraryDirectory(root, state, 1000);
+  const result = await syncLibraryDirectory(root, state, 5000);
+  assert.equal(result.added, 0);
+  assert.equal(result.snapshot.assets[0].sourceFolder, "品牌素材");
 });
 test("local and public roots cannot overlap or silently expose personal projects", async (t) => {
   const root = await fixture(t);

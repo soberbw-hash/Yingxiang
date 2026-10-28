@@ -6,7 +6,8 @@ import { FeatureDialog, errorText } from "./shared";
 import "./features.css";
 import { BrowserNotificationSettings } from "./BrowserNotificationSettings";
 import type { BackupInfo } from "../services/projectArchive";
-import harmonyLicense from "../assets/fonts/LICENSE.txt?raw";
+import { checkBrowserUpdate } from "../services/browserUpdates.mjs";
+import { version as appVersion } from "../../package.json";
 
 export type SettingsDialogProps = {
   settings: Settings;
@@ -16,6 +17,7 @@ export type SettingsDialogProps = {
   onSave: (patch: Partial<Settings>) => Promise<void>;
   onChooseInbox: () => Promise<void>;
   directorySettings?: ReactNode;
+  onBackup?: () => void;
   onListProjectBackups?: () => Promise<BackupInfo[]>;
   onCreateProjectBackup?: () => Promise<BackupInfo>;
   onRestoreProjectBackup?: (backupId: string) => Promise<{ canceled?: boolean } | void>;
@@ -28,6 +30,7 @@ export function SettingsDialog({
   onSave,
   onChooseInbox,
   directorySettings,
+  onBackup,
   onListProjectBackups,
   onCreateProjectBackup,
   onRestoreProjectBackup,
@@ -53,7 +56,7 @@ export function SettingsDialog({
           setError("");
           try {
             await onSave({
-              notifications,
+              notifications: desktop ? notifications : true,
               ...(desktop
                 ? {
                     background,
@@ -83,13 +86,12 @@ export function SettingsDialog({
           }
         }}
       >
-        <fieldset className="feature-fields settings-section" disabled={busy}>
+        {desktop && <fieldset className="feature-fields settings-section" disabled={busy}>
           <legend>素材接收</legend>
           <label>
             新素材默认保存到
             <input value={settings.inboxPath} readOnly />
           </label>
-          {desktop ? (
             <button
               type="button"
               onClick={async () => {
@@ -107,10 +109,7 @@ export function SettingsDialog({
               <FolderOpen />
               选择接收文件夹
             </button>
-          ) : (
-            <p className="feature-note">浏览器版的保存位置由当前项目决定；可在下方连接项目文件夹。</p>
-          )}
-        </fieldset>
+        </fieldset>}
         <details className="settings-group" open>
           <summary>项目存储与备份</summary>
           {directorySettings}
@@ -120,9 +119,10 @@ export function SettingsDialog({
             onCreate={onCreateProjectBackup}
             onRestore={onRestoreProjectBackup}
           />}
-          {!desktop && <p className="feature-note">浏览器项目页的「恢复备份」会先校验 ZIP，再创建独立项目；不会覆盖原项目。</p>}
+          {!desktop && project && onBackup && <button type="button" disabled={busy} onClick={onBackup}>创建完整备份</button>}
         </details>
         {desktop && <PortableUpdatePanel />}
+        {!desktop && <BrowserUpdatePanel />}
         <fieldset className="feature-fields settings-section" disabled={busy}>
           <legend>通知</legend>
           {desktop ? <>
@@ -139,7 +139,7 @@ export function SettingsDialog({
               <input type="checkbox" checked={background} onChange={(event) => setBackground(event.target.checked)} />
               关闭窗口后继续运行
             </label>
-          </> : <BrowserNotificationSettings enabled={notifications} onChange={setNotifications} disabled={busy} />}
+          </> : <BrowserNotificationSettings enabled onChange={() => {}} disabled={busy} />}
         </fieldset>
         <details className="settings-group">
           <summary>高级 · AI 服务连接</summary>
@@ -179,18 +179,6 @@ export function SettingsDialog({
           </p>
           </fieldset>
         </details>
-        <details className="settings-group">
-          <summary>字体与许可</summary>
-          <p className="feature-note">
-            本软件使用 HarmonyOS Sans 鸿蒙字体，已内置，无需安装。
-          </p>
-          <details className="font-license">
-            <summary>
-              查看字体许可 · Copyright 2021 Huawei Device Co., Ltd.
-            </summary>
-            <pre>{harmonyLicense.replace(/\0/g, "").trim()}</pre>
-          </details>
-        </details>
         {error && (
           <p className="feature-error" role="alert">
             {error}
@@ -209,6 +197,33 @@ export function SettingsDialog({
       </form>
     </FeatureDialog>
   );
+}
+
+function BrowserUpdatePanel() {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [download, setDownload] = useState<{ version: string; url: string }>();
+  const check = async () => {
+    setBusy(true); setMessage(""); setDownload(undefined);
+    try {
+      const update = await checkBrowserUpdate(appVersion);
+      if (update.available) {
+        setDownload(update);
+        setMessage(`发现新版 ${update.version}。请下载浏览器版更新包。`);
+      } else setMessage(`GitHub 最新正式版本：${update.version}。`);
+    } catch (error) { setMessage(errorText(error)); }
+    finally { setBusy(false); }
+  };
+  return <fieldset className="feature-fields settings-section">
+    <legend>软件更新</legend>
+    <p className="feature-note">浏览器版 {appVersion} · 更新前建议先备份项目。请保留原来的 Weave.html 路径，以便继续访问浏览器中的项目。</p>
+    <div className="feature-actions">
+      <button type="button" disabled={busy} onClick={() => void check()}><ArrowClockwise />{busy ? "正在检查…" : "检查更新"}</button>
+      {download && <a href={download.url} target="_blank" rel="noopener noreferrer">下载 {download.version}</a>}
+    </div>
+    {message && <p className="feature-note" role="status">{message}</p>}
+    {download && <p className="feature-note">下载后请解压，关闭其他映箱页面，再将新包里的 Weave.html 覆盖到原位置。项目文件夹不要覆盖；页面无法自动校验下载结果。</p>}
+  </fieldset>;
 }
 
 type PortableUpdateState = {
@@ -258,14 +273,14 @@ function PortableUpdatePanel() {
   return <fieldset className="feature-fields settings-section" disabled={busy}>
     <legend>软件更新</legend>
     <p className="feature-note">
-      Windows 便携版启动时会检查并自动下载新版，下载后校验文件完整性。更新包只替换 Weave 程序目录，不会改动项目目录；安装位置需允许当前用户写入。
+      Windows 便携版启动时会检查并自动下载新版，下载后校验文件完整性。更新包只替换 映箱程序目录，不会改动项目目录；安装位置需允许当前用户写入。
     </p>
     <p className="feature-note" role="status">
       {status.state === "checking" ? "正在检查更新…" :
         status.state === "current" ? `当前已是最新版本${status.currentVersion ? `（${status.currentVersion}）` : ""}。` :
           status.state === "available" ? `发现新版本 ${status.version}（${formatUpdateSize(status.size)}）。` :
-            status.state === "downloading" ? `正在下载 Weave ${status.version}（${formatUpdateSize(status.size)}）…` :
-              status.state === "downloaded" ? `Weave ${status.version} 已下载并校验完成。请关闭软件后，将 ZIP 解压并覆盖旧的 Weave 程序文件；不要覆盖项目文件夹。` :
+            status.state === "downloading" ? `正在下载映箱 ${status.version}（${formatUpdateSize(status.size)}）…` :
+              status.state === "downloaded" ? `映箱 ${status.version} 已下载并校验完成。请关闭软件后，将 ZIP 解压并覆盖旧的映箱程序文件；不要覆盖项目文件夹。` :
                 status.message || "尚未检查更新。"}
     </p>
     <div className="project-backup-heading">
@@ -334,7 +349,7 @@ function ProjectBackupPanel({
     {!loaded ? <p className="feature-note">正在读取备份记录…</p> : backups.length ? <ul>{backups.slice(0, 4).map(backup => <li key={backup.id}>
       <span><b>{new Date(backup.createdAt).toLocaleString()}</b><small>{backup.reason} · {backup.assetCount} 个素材 · {formatBytes(backup.size)}</small></span>
       <button type="button" disabled={busy} title="校验备份后恢复到你选择的空文件夹，不覆盖当前项目" onClick={() => void restore(backup)}>恢复为副本</button>
-    </li>)}</ul> : <p className="feature-note">暂无项目备份；新建的完整备份会保存在项目目录旁的 Weave 备份区。</p>}
+    </li>)}</ul> : <p className="feature-note">暂无项目备份；新建的完整备份会保存在项目目录旁的 映箱备份区。</p>}
     {message && <p className="feature-success" role="status">{message}</p>}
     {error && <p className="feature-error" role="alert">{error}</p>}
   </section>;

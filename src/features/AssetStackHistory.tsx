@@ -3,6 +3,7 @@ import type { StackAction } from "../../shared/asset-stacks.mjs";
 import { stackMembers } from "../../shared/asset-stacks.mjs";
 import { useState } from "react";
 import { FeatureDialog } from "./shared";
+import { AssetCompareDialog } from "./AssetCompareDialog";
 import {
   downloadOriginal,
   writeAssetDrag,
@@ -23,6 +24,7 @@ export function AssetStackHistory({
   onPreview: (asset: Asset) => void;
 }) {
   const members = stackMembers(asset, assets);
+  const [compare, setCompare] = useState(false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const action = async (value: StackAction) => {
@@ -42,6 +44,8 @@ export function AssetStackHistory({
       onClose={onClose}
       busy={busy}
     >
+      {members.length >= 2 && <div className="stack-compare-entry"><button disabled={busy} onClick={() => setCompare(true)}>并排对比版本</button><span>同步播放后，可直接选择置顶版本</span></div>}
+      {compare && <AssetCompareDialog assets={members} initialIds={members.slice(0, 2).map(a => a.id)} onClose={() => setCompare(false)} onStackAction={onAction} />}
       <div className="stack-history">
         {members.map((item, index) => (
           <article

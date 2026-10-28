@@ -56,13 +56,13 @@ const html = `<!doctype html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light">
-<title>Weave · 浏览器本地版</title>
+<title>映箱 · 浏览器本地版</title>
 <link rel="icon" href="data:,">
 <style>${css}</style>
 </head>
 <body>
-<noscript>Weave 需要 JavaScript。若公司策略限制，请联系 IT 审核，勿关闭安全防护。</noscript>
-<div id="root"><p role="status">正在打开 Weave…</p></div>
+<noscript>映箱需要 JavaScript。若公司策略限制，请联系 IT 审核，勿关闭安全防护。</noscript>
+<div id="root"><p role="status">正在打开映箱…</p></div>
 <script>${javascript}</script>
 </body>
 </html>`;

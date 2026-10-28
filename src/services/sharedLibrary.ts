@@ -36,6 +36,7 @@ export type SharedAsset = Asset & {
   external?: boolean;
   origin?: { libraryId?: string; assetId: string; hash: string };
   conflict?: boolean;
+  sourceFolder?: string;
 };
 type Entry = Omit<SharedAsset, "url" | "head" | "conflict">;
 type LibraryChange = {
@@ -57,6 +58,7 @@ export type LibrarySnapshot = {
   assets: SharedAsset[];
   updates: LibraryUpdate[];
   warnings: string[];
+  folders?: string[];
 };
 const imageExtensions = new Set([
   "png",
@@ -97,6 +99,8 @@ function validateEntry(entry: Entry, libraryId: string) {
 }
 export async function initializeLibrary(root: DiskDirectory) {
   await directoryPermission(root, true);
+  if (await optionalJson(root, "weave.project-folder.json"))
+    throw new Error("这是个人项目文件夹，请选择单独的公共库文件夹，避免公开项目素材。");
   const existing = await optionalJson(root, "weave.library.json");
   if (existing) {
     if (
@@ -106,6 +110,13 @@ export async function initializeLibrary(root: DiskDirectory) {
     )
       throw new Error("公共库格式不受支持，原目录未修改");
     return existing.id as string;
+  }
+  let hasInstructions = false;
+  try {
+    await readDiskFile(root, "_Weave/目录说明.txt");
+    hasInstructions = true;
+  } catch (error) {
+    if (!isMissing(error)) throw error;
   }
   const id = crypto.randomUUID();
   await writeDiskFile(
@@ -123,7 +134,7 @@ export async function initializeLibrary(root: DiskDirectory) {
     ),
     true,
   );
-  await writeDiskFile(
+  if (!hasInstructions) await writeDiskFile(
     root,
     "_Weave/目录说明.txt",
     "公共资产按产品、角色、场景等中文目录保存。_Weave 保存校验提交与历史文件，不要手动删除。软件不包含账号，也不会上传到外部服务器。请通过 Weave 整理受管理素材；共享盘自身仍需要备份。",
@@ -144,7 +155,7 @@ export async function librarySnapshot(
     header.schemaVersion !== 1 ||
     !idPattern.test(header.id)
   )
-    throw new Error("请选择 Weave 公共资产库，或使用「关联现有目录（只读）」");
+    throw new Error("这不是可识别的 Weave 公共库，请重新选择共享文件夹");
   const commits = await readCommits<LibraryChange>(root);
   const versions = new Map<
     string,
@@ -330,32 +341,27 @@ export async function imageLibraryInput(
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
   const bytes = new Uint8Array(await file.slice(0, 32).arrayBuffer());
   const text = new TextDecoder().decode(bytes);
-  const valid =
-    ext === "png"
-      ? bytes[0] === 137 && text.slice(1, 4) === "PNG"
-      : ["jpg", "jpeg"].includes(ext)
-        ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-        : ext === "webp"
-          ? text.startsWith("RIFF") && text.slice(8, 12) === "WEBP"
-          : ext === "gif"
-            ? /^GIF8[79]a/.test(text)
-            : ext === "bmp"
-              ? text.startsWith("BM")
-              : ext === "avif"
-                ? text.slice(4, 8) === "ftyp" && /avif|avis/.test(text)
-                : false;
-  if (!valid) throw new Error(`不是兼容的图片原文件：${file.name}`);
+  const detected = bytes[0] === 137 && text.slice(1, 4) === "PNG" ? "png"
+    : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? "jpg"
+    : text.startsWith("RIFF") && text.slice(8, 12) === "WEBP" ? "webp"
+    : /^GIF8[79]a/.test(text) ? "gif"
+    : text.startsWith("BM") ? "bmp"
+    : text.slice(4, 8) === "ftyp" && /avif|avis/.test(text) ? "avif"
+    : undefined;
+  if (!detected || !imageExtensions.has(ext)) throw new Error(`不是兼容的图片原文件：${file.name}`);
+  const actualExt = detected === "jpg" && ext === "jpeg" ? "jpeg" : detected;
+  const name = actualExt === ext ? file.name : `${file.name.slice(0, file.name.lastIndexOf("."))}.${actualExt}`;
   const id = crypto.randomUUID(),
     now = new Date().toISOString();
   return {
     blob: file,
     asset: {
       id,
-      name: file.name,
-      relativePath: `media/${id}.${ext}`,
+      name,
+      relativePath: `media/${id}.${actualExt}`,
       kind: "image",
       category: "uncategorized",
-      mime: `image/${ext === "jpg" ? "jpeg" : ext}`,
+      mime: `image/${actualExt === "jpg" ? "jpeg" : actualExt}`,
       size: file.size,
       hash: await hashBlob(file),
       revision: 1,
@@ -389,7 +395,7 @@ function publicPath(asset: Entry) {
 export async function publishToLibrary(
   root: DiskDirectory,
   clientId: string,
-  inputs: { asset: Asset; blob: Blob }[],
+  inputs: { asset: Asset; blob: Blob; sourceFolder?: string }[],
   group?: LibraryGroup,
 ) {
   if (inputs.length > 1000)
@@ -439,6 +445,7 @@ export async function publishToLibrary(
       createdAt: now,
       updatedAt: now,
       origin: { assetId: input.asset.id, hash },
+      ...(input.sourceFolder ? { sourceFolder: input.sourceFolder } : {}),
     };
     entry.relativePath = publicPath(entry);
     await writeVerified(root, entry.relativePath, input.blob, hash);
@@ -482,7 +489,10 @@ export async function editSharedAsset(
       throw new Error("重命名请保留原扩展名；修改扩展名不会转换图片格式");
     next.name = name;
   }
-  if (patch.group !== undefined) next.group = patch.group;
+  if (patch.group !== undefined) {
+    next.group = patch.group;
+    delete next.sourceFolder;
+  }
   if (patch.trashedAt === null) delete next.trashedAt;
   else if (patch.trashedAt !== undefined) next.trashedAt = patch.trashedAt;
   next.category = next.group === "product" ? "prop" : next.group;
@@ -542,6 +552,7 @@ export async function scanExternalLibrary(
 ): Promise<LibrarySnapshot> {
   await directoryPermission(root, false);
   const assets: SharedAsset[] = [];
+  const folders: string[] = [];
   let seen = 0;
   const walk = async (
     directory: DiskDirectory,
@@ -555,6 +566,7 @@ export async function scanExternalLibrary(
       if (entry.name.startsWith(".") || entry.name === "_Weave") continue;
       const path = prefix + entry.name;
       if (entry.kind === "directory") {
+        if (depth === 0) folders.push(entry.name);
         await walk(entry, path + "/", depth + 1);
         continue;
       }
@@ -571,6 +583,7 @@ export async function scanExternalLibrary(
         libraryId,
         head: hash,
         external: true,
+        sourceFolder: path.includes("/") ? path.split("/")[0] : undefined,
         relativePath: path,
         group,
         category: group === "product" ? "prop" : group,
@@ -602,6 +615,7 @@ export async function scanExternalLibrary(
       assetIds: [asset.id],
     })),
     warnings: [],
+    folders,
   };
 }
 
@@ -645,7 +659,7 @@ export async function syncLibraryDirectory(
       const result = await publishToLibrary(
         root,
         clientId,
-        [input],
+        [{ ...input, sourceFolder: file.path.includes("/") ? file.path.split("/")[0] : undefined }],
         libraryGroups.some((item) => item.id === group)
           ? (group as LibraryGroup)
           : "uncategorized",
@@ -658,6 +672,19 @@ export async function syncLibraryDirectory(
     }
   }
   const next = added ? await librarySnapshot(root) : snapshot;
+  const sourceFolders = new Map<string, Set<string>>();
+  for (const file of [...scan.knownPaths, ...scan.files]) {
+    const folder = file.path.includes("/") ? file.path.split("/")[0] : "";
+    if (!folder) continue;
+    const folders = sourceFolders.get(file.hash) || new Set<string>();
+    folders.add(folder);
+    sourceFolders.set(file.hash, folders);
+  }
+  for (const asset of next.assets) {
+    const folders = sourceFolders.get(asset.hash);
+    if (!asset.sourceFolder && asset.revision === 1 && folders?.size === 1)
+      asset.sourceFolder = [...folders][0];
+  }
   if (added)
     next.warnings.push(
       ...snapshot.warnings.filter(
@@ -665,5 +692,6 @@ export async function syncLibraryDirectory(
       ),
     );
   next.warnings.push(...scan.warnings);
+  next.folders = scan.folders;
   return { snapshot: next, added, pending: scan.pending };
 }

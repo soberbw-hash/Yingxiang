@@ -156,7 +156,7 @@ test("capture and audio UI wire reset, lazy bounded waveforms, preview and truth
   assert.match(reference, /<AudioThumbnail asset=\{asset\}/);
   assert.match(thumb, /writeMediaFileDrag\(e.dataTransfer, asset\)/);
   assert.match(thumb, /bindDragCleanup\(window, \(\) => setDropHover\(false\)\)/);
-  assert.match(paragraph, /bindDragCleanup\(window, \(\) => setDropping\(false\)\)/);
+  assert.match(paragraph, /bindDragCleanup\(window, \(\) => \{\s*setDropping\(false\)/);
   assert.match(audio, /IntersectionObserver/);
   assert.match(audio, /controller.abort\(\)/);
   assert.match(audio, /非真实波形/);

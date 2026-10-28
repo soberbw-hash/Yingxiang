@@ -1,4 +1,4 @@
-name: Build and publish Weave
+name: Build and publish 映箱
 
 on:
   push:
@@ -54,5 +54,5 @@ jobs:
             "release/Weave-Windows-v$((Get-Content package.json | ConvertFrom-Json).version).zip" `
             "release/Weave-Browser-v$((Get-Content package.json | ConvertFrom-Json).version).zip" `
             --repo $env:GITHUB_REPOSITORY `
-            --title "Weave $env:GITHUB_REF_NAME" `
+            --title "映箱 $env:GITHUB_REF_NAME" `
             --generate-notes

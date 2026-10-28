@@ -40,23 +40,38 @@ class ProjectSafety {
     const backup = this.backupUnlocked(root, "更新前自动备份");
     this.markCurrent(root, backup.id);
   }
-  backupUnlocked(root, reason) {
+  backupUnlocked(root, reason, includeTrash = true) {
     const project = this.repo.project(root);
     const id = this.uuid(), base = this.base(root);
     fs.mkdirSync(base, { recursive: true });
     const staging = this.inside(base, `.partial-${id}`), destination = this.inside(base, id);
     fs.mkdirSync(staging);
     try {
-      const files = ["weave.project.json"];
+      let files = ["weave.project.json"];
       for (const dir of ["media", "metadata", "activity", "trash"])
         if (fs.existsSync(this.inside(root, dir))) files.push(...this.walk(root, dir));
-      const manifest = { format: "weave-folder-backup", backupVersion: 1, appVersion: this.repo.appVersion, id, projectId: project.id, name: project.name, createdAt: this.now(), reason, assetCount: 0, size: 0, files: [] };
+      const allAssets = files.filter(name => /^metadata\/assets\/.+\.json$/.test(name)).map(name => this.read(this.inside(root, name)));
+      const removed = new Set(includeTrash ? [] : allAssets.filter(asset => asset.trashedAt).map(asset => asset.id));
+      const activePaths = new Set(allAssets.filter(asset => !removed.has(asset.id)).map(asset => asset.relativePath));
+      const omittedPaths = new Set(allAssets.filter(asset => removed.has(asset.id) && !activePaths.has(asset.relativePath)).map(asset => asset.relativePath));
+      files = files.filter(name => !omittedPaths.has(name) && ![...removed].some(assetId => name === `metadata/assets/${assetId}.json` || name === `trash/${assetId}.json`));
+      const cleanDocument = doc => { for (const paragraph of [...(doc?.paragraphs || []), ...(doc?.removed || []).map(item => item.paragraph)]) paragraph.links = paragraph.links.filter(link => !removed.has(link.assetId)); };
+      const transform = (name, value) => {
+        if (name === "metadata/editing.json") cleanDocument(value);
+        else if (name === "metadata/editing-history.json") for (const entry of value) cleanDocument(entry.document);
+        else if (name === "metadata/canvas.json") value.nodes = value.nodes.filter(node => node.kind !== "asset" || !removed.has(node.assetId));
+        else if (/^metadata\/shots\/.+\.json$/.test(name) && value.assetIds) value.assetIds = value.assetIds.filter(assetId => !removed.has(assetId));
+        return value;
+      };
+      const manifest = { format: "weave-folder-backup", backupVersion: 1, appVersion: this.repo.appVersion, id, projectId: project.id, name: project.name, createdAt: this.now(), reason, includeTrash, trashCount: allAssets.filter(asset => asset.trashedAt && !removed.has(asset.id)).length, assetCount: 0, size: 0, files: [] };
       for (const name of files) {
         const source = this.inside(root, name), target = this.inside(staging, name);
         fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
-        const hash = this.hashFile(source), size = fs.statSync(source).size;
-        if (this.hashFile(target) !== hash || fs.statSync(target).size !== size) throw new Error(`备份文件校验失败：${name}`);
+        const needsTransform = removed.size && (name === "metadata/editing.json" || name === "metadata/editing-history.json" || name === "metadata/canvas.json" || /^metadata\/shots\/.+\.json$/.test(name));
+        if (needsTransform) fs.writeFileSync(target, JSON.stringify(transform(name, this.read(source)), null, 2), { flag: "wx" });
+        else fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+        const hash = this.hashFile(target), size = fs.statSync(target).size;
+        if (!needsTransform && (this.hashFile(source) !== hash || fs.statSync(source).size !== size)) throw new Error(`备份文件校验失败：${name}`);
         // Windows FlushFileBuffers requires a writable handle. Only the newly
         // copied staging file is opened for writing, never the source project.
         const fd = fs.openSync(target, "r+");
@@ -81,8 +96,8 @@ class ProjectSafety {
     }
   }
   info(manifest, location) {
-    const { id, projectId, name, createdAt, reason, assetCount, size } = manifest;
-    return { id, projectId, name, createdAt, reason, assetCount, size, path: location };
+    const { id, projectId, name, createdAt, reason, assetCount, size, trashCount, includeTrash } = manifest;
+    return { id, projectId, name, createdAt, reason, assetCount, size, trashCount, includeTrash, path: location };
   }
   list(projectId) {
     const root = this.repo.root(projectId), base = this.base(root);
@@ -93,9 +108,9 @@ class ProjectSafety {
       return this.info(manifest, location);
     }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-  create(projectId) {
+  create(projectId, includeTrash = true) {
     const root = this.repo.root(projectId);
-    return this.repo.lock(root, () => this.backupUnlocked(root, "手动完整备份"));
+    return this.repo.lock(root, () => this.backupUnlocked(root, includeTrash ? "手动完整备份" : "手动备份（不含回收站）", includeTrash));
   }
   restore({ projectId, backupId, destination }) {
     const backup = this.list(projectId).find((item) => item.id === backupId);

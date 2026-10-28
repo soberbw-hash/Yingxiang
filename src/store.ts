@@ -55,14 +55,14 @@ export const useWorkspace = create<State>((set, get) => ({
         await get().refresh();
         if (result?.directoryWarning) set({ warning: result.directoryWarning });
         if (!isDesktop)
-          notifyBrowserTask(method, result, get().settings.notifications);
+          notifyBrowserTask(method, result, true);
         return result;
       } catch (error) {
         if (!isDesktop)
           notifyBrowserTask(
             method,
             undefined,
-            get().settings.notifications,
+            true,
             true,
           );
         set({ error: String((error as Error).message || error) });

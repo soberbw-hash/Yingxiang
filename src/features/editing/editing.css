@@ -35,6 +35,8 @@
   outline-offset: 2px;
 }
 .editing-toolbar {
+  position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -61,8 +63,14 @@
 }
 .editing-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 7px;
   flex-wrap: wrap;
+}
+.editing-actions .editing-document-search {
+  width: 150px;
+  height: 34px;
 }
 .editing-layout {
   display: flex;
@@ -76,23 +84,6 @@
   display: flex;
   flex-direction: column;
 }
-.editing-document-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 12px 24px;
-  font-size: 12px;
-  background: white;
-  border-bottom: 1px solid var(--line);
-  flex-shrink: 0;
-}
-.editing-document-bar > input:first-child {
-  font-weight: 600;
-  max-width: 160px;
-  border-color: transparent;
-  background: transparent;
-}
 .editing-workspace input,
 .editing-workspace select,
 .editing-workspace textarea {
@@ -105,19 +96,6 @@
   max-width: 100%;
   min-width: 0;
 }
-.editing-document-bar > input[aria-label="搜索文稿与批注"] {
-  width: 160px;
-  margin-left: auto;
-}
-.editing-checkbox {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-.editing-checkbox input {
-  accent-color: var(--accent);
-}
 .editing-scroll {
   overflow: auto;
   padding: 20px 24px;
@@ -126,6 +104,7 @@
   scrollbar-gutter: stable;
 }
 .editing-paragraph {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   border: 1px solid #e1e3eb;
@@ -142,10 +121,25 @@
   border-color: #8065e8;
   box-shadow: 0 0 0 2px #e9e3ff;
 }
-.editing-paragraph.is-reordering {
-  border-color: #8065e8;
-  box-shadow: 0 0 0 2px #ded6ff;
+.editing-paragraph.is-dragging-paragraph { opacity: .48; }
+.editing-paragraph.is-reordering-before::after,
+.editing-paragraph.is-reordering-after::after {
+  content: "松开插入这里";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  height: 3px;
+  border-radius: 3px;
+  background: #7654ed;
+  color: #5d42ce;
+  font-size: 11px;
+  line-height: 1;
+  padding-left: 8px;
+  pointer-events: none;
 }
+.editing-paragraph.is-reordering-before::after { top: -8px; }
+.editing-paragraph.is-reordering-after::after { bottom: -8px; }
 .editing-paragraph.is-dropping {
   border-color: var(--accent);
   background: #f7f4ff;
@@ -253,14 +247,35 @@
   border-radius: 5px;
   padding: 7px 9px;
 }
-.paragraph-text.is-editing {
+.editing-workspace textarea.paragraph-text.is-editing {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: inherit;
+  line-height: 1.75;
+  letter-spacing: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   outline: none;
   cursor: text;
+  resize: none;
+  overflow: hidden;
 }
-.paragraph-text.is-editing:empty::before {
-  content: attr(data-placeholder);
+.editing-workspace .is-generated textarea.paragraph-text.is-editing {
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: #f0f8f2;
+}
+.paragraph-text.is-editing::placeholder {
   color: #9296a5;
-  pointer-events: none;
+  opacity: 1;
 }
 .paragraph-editor-actions {
   display: flex;
@@ -290,6 +305,38 @@
   min-height: 24px;
   font-size: 11px;
 }
+.editing-selection-staging {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 24px;
+  border-bottom: 1px solid #e8e4f4;
+  background: #faf9ff;
+  color: #56516b;
+  font-size: 11px;
+}
+.editing-selection-staging-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.editing-selection-staging-heading span { color: #818092; }
+.editing-selection-staging-items { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.editing-selection-staging-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(420px, 100%);
+  padding: 2px 4px 2px 8px;
+  border: 1px solid #e5e1f1;
+  border-radius: 7px;
+  background: white;
+}
+.editing-selection-staging-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editing-selection-staging-item button { min-height: 23px; padding: 3px 4px; border: 0; }
+.editing-selection-staging-actions { display: flex; align-items: center; gap: 5px; }
+.editing-selection-staging-actions button { min-height: 26px; padding: 4px 8px; font-size: 11px; }
 .paragraph-notes {
   margin-top: 12px;
   border-top: 1px solid #eeedf4;
@@ -708,6 +755,22 @@
 .editing-removed {
   padding: 18px 22px;
 }
+.editing-export-videos {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.editing-export-videos p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.editing-export-videos button {
+  justify-self: start;
+}
 .editing-paste > textarea {
   width: 100%;
   line-height: 1.6;
@@ -825,24 +888,7 @@
   .editing-toolbar {
     padding: 12px 14px;
   }
-  .editing-document-bar {
-    padding: 10px 14px;
-    gap: 7px;
-  }
-  .editing-document-bar > input:first-child {
-    flex: 1 1 120px;
-    max-width: none;
-  }
-  .editing-document-bar > input[aria-label="搜索文稿与批注"] {
-    flex: 1 1 160px;
-    width: auto;
-    margin-left: 0;
-  }
-  .editing-document-bar > button,
-  .editing-document-bar > label,
-  .editing-document-bar > details {
-    flex: 0 0 auto;
-  }
+  .editing-actions { justify-content: flex-start; }
   .editing-scroll {
     padding: 14px;
   }
@@ -861,12 +907,7 @@
   }
 }
 @media (max-width: 760px) {
-  .editing-document-bar,
   .editing-scroll {
     padding: 10px 14px;
-  }
-  .editing-document-bar > input[aria-label="搜索文稿与批注"] {
-    flex-basis: 100%;
-    order: 5;
   }
 }

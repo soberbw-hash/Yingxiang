@@ -1,10 +1,10 @@
-# Weave
+# 映箱 Yingxiang
 
-Weave 是一款用于视频创作的本地素材管理工具，提供素材库、自由画布、剪辑对照、项目备份与可选的共享图片库。
+映箱（原 Weave）是一款用于视频创作的本地素材管理工具，提供素材库、自由画布、剪辑对照、项目备份与可选的共享图片库。
 
 ## 下载
 
-Windows 使用者请从 [Releases](https://github.com/soberbw-hash/Weave/releases) 下载最新的 `Weave-Windows-v*.zip`，解压后运行 `Weave\Weave.exe`。这是便携版，不需要安装器；公司设备的执行和联网限制仍以 IT 策略为准。
+Windows 使用者请从 [Releases](https://github.com/soberbw-hash/Yingxiang/releases) 下载最新的 `Weave-Windows-v*.zip`，解压后运行 `Weave\Weave.exe`。这是便携版，不需要安装器；公司设备的执行和联网限制仍以 IT 策略为准。
 
 浏览器版可从同一 Release 下载 `Weave-Browser.zip`。它使用当前浏览器本地存储，不具备桌面版的后台文件夹观察等能力。浏览器版不会与桌面版自动同步项目数据。
 

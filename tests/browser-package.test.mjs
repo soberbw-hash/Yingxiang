@@ -35,13 +35,14 @@ test("browser deliverable is a self-contained HTML with no external startup depe
   assert.ok(Buffer.byteLength(html) < embeddedFontBudget + 2_000_000);
 });
 test("browser deliverable includes local-storage warning and company-policy recovery text", () => {
-  assert.match(html, /定期导出 ZIP 备份/);
+  assert.match(html, /创建完整备份/);
+  assert.match(html, /清理站点数据后，需要从完整备份恢复/);
   assert.match(html, /获批的 HTTPS 内网地址/);
   assert.match(html, /勿关闭安全防护/);
   assert.match(html, /开启浏览器通知/);
   assert.match(html, /发送测试通知/);
   assert.match(html, /软件内「通知」列表不受此权限影响/);
-  assert.match(html, /关闭网页不持续接收/);
+  assert.match(html, /接收目录更新时请保持页面打开/);
   assert.match(html, /用于上传/);
   assert.match(html, /下载原文件/);
   assert.match(html, /上沿对齐/);
@@ -90,7 +91,7 @@ test("standalone HTML embeds unmodified official HarmonyOS fonts and retains the
     )
     .sort();
   assert.deepEqual(hashes, harmonyFonts.map((font) => font.sha256).sort());
-  assert.ok(html.includes("本软件使用 HarmonyOS Sans 鸿蒙字体"));
+  assert.ok(!html.includes("字体与许可"));
   assert.ok(!html.includes("project-initial"));
   const verified = await verifiedHarmonyFonts();
   const license = await readFile(

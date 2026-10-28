@@ -16,7 +16,10 @@ import {
   browserProjectData,
   namedExportPaths,
 } from "../src/services/browserRepository.ts";
-import { buildEditingHandoff } from "../src/services/editingHandoff.ts";
+import {
+  buildEditingHandoff,
+  buildEditingVideos,
+} from "../src/services/editingHandoff.ts";
 import { readZip } from "../src/services/zip.ts";
 import {
   buildBackup,
@@ -130,6 +133,91 @@ test("editing document snapshots can be safely restored for undo and redo", () =
     /其他窗口/,
   );
 });
+test("splitting at the start of a Chinese phrase keeps the exact caret boundary", () => {
+  const text = "前文内容，男主叹了口气。\n老小区里，两人慢慢走着。";
+  let doc = edit(undefined, { type: "import", text, mode: "blank" });
+  const id = doc.paragraphs[0].id;
+  doc = edit(doc, { type: "split", id, at: text.indexOf("老小区") });
+  assert.equal(doc.paragraphs[0].text, "前文内容，男主叹了口气。\n");
+  assert.equal(doc.paragraphs[1].text, "老小区里，两人慢慢走着。");
+});
+test("editing mutations used by split, merge, deletion and video drops can round-trip through document history", async () => {
+  const files = await assets();
+  let doc = edit(undefined, { type: "import", text: "前段内容后段内容", mode: "blank" }, files);
+  const id = doc.paragraphs[0].id;
+  doc = edit(doc, { type: "link", id, assetIds: [files[0].id] }, files);
+  const history = [];
+  const mutate = (action) => {
+    const before = structuredClone(doc);
+    doc = edit(doc, action, files);
+    history.push({ before, after: structuredClone(doc) });
+  };
+  mutate({ type: "split", id, at: 4 });
+  mutate({ type: "merge", id, count: 1 });
+  mutate({ type: "unlink", id, assetId: files[0].id });
+  mutate({ type: "link", id, assetIds: [files[0].id] });
+  mutate({ type: "remove", id });
+  for (const entry of [...history].reverse()) {
+    doc = applyEditing(doc, { type: "restoreDocument", document: entry.before }, files, [], doc.revision);
+    assert.deepEqual(doc.paragraphs, entry.before.paragraphs);
+    doc = applyEditing(doc, { type: "restoreDocument", document: entry.after }, files, [], doc.revision);
+    assert.deepEqual(doc.paragraphs, entry.after.paragraphs);
+  }
+});
+test("selected text can be extracted as an adjacent paragraph without losing order, links, marks, notes, or undoability", async () => {
+  const files = await assets();
+  let doc = edit(undefined, { type: "import", text: "上段前选中选中后下段", mode: "blank" }, files);
+  const paragraphId = doc.paragraphs[0].id;
+  doc = edit(doc, { type: "link", id: paragraphId, assetIds: [files[0].id] }, files);
+  doc = edit(doc, { type: "mark", id: paragraphId, start: 3, end: 7, quote: "选中选中" }, files);
+  doc = edit(doc, { type: "note", id: paragraphId, text: "保留原批注", quote: "上段" }, files);
+  const before = structuredClone(doc);
+  doc = edit(doc, { type: "extractSelection", id: paragraphId, start: 3, end: 7, quote: "选中选中" }, files);
+  assert.deepEqual(doc.paragraphs.map((item) => item.text), ["上段前", "选中选中", "后下段"]);
+  assert.equal(doc.paragraphs[0].id, paragraphId);
+  assert.deepEqual(doc.paragraphs.map((item) => item.links), [
+    before.paragraphs[0].links,
+    [],
+    [],
+  ]);
+  assert.deepEqual(doc.paragraphs.map((item) => item.marks), [[], [{ start: 0, end: 4 }], []]);
+  assert.equal(doc.paragraphs[0].notes[0].text, "保留原批注");
+  assert.deepEqual(doc.paragraphs[1].notes, []);
+  const undone = applyEditing(doc, { type: "restoreDocument", document: before }, files, [], doc.revision);
+  assert.deepEqual(undone.paragraphs, before.paragraphs);
+  assert.throws(
+    () => edit(doc, { type: "extractSelection", id: paragraphId, start: 3, end: 7, quote: "过期选区" }, files),
+    /选中文字已变化/,
+  );
+});
+test("selected excerpts from adjacent paragraphs combine into one independent middle paragraph", async () => {
+  const files = await assets();
+  let doc = edit(undefined, { type: "import", text: "甲乙丙丁\n\n戊己庚辛", mode: "blank" }, files);
+  const [upper, lower] = doc.paragraphs.map((item) => item.id);
+  doc = edit(doc, { type: "link", id: upper, assetIds: [files[0].id] }, files);
+  doc = edit(doc, { type: "mark", id: upper, start: 0, end: 4, quote: "甲乙丙丁" }, files);
+  const before = structuredClone(doc);
+  doc = edit(doc, {
+    type: "combineSelections",
+    selections: [
+      { id: lower, start: 0, end: 2, quote: "戊己" },
+      { id: upper, start: 1, end: 3, quote: "乙丙" },
+    ],
+  }, files);
+  assert.deepEqual(doc.paragraphs.map((item) => item.text), ["甲丁", "乙丙\n戊己", "庚辛"]);
+  assert.deepEqual(doc.paragraphs[0].links, before.paragraphs[0].links);
+  assert.deepEqual(doc.paragraphs[1].links, []);
+  assert.deepEqual(doc.paragraphs[0].marks, [{ start: 0, end: 1 }, { start: 1, end: 2 }]);
+  const undone = applyEditing(doc, { type: "restoreDocument", document: before }, files, [], doc.revision);
+  assert.deepEqual(undone.paragraphs, before.paragraphs);
+  assert.throws(() => edit(doc, {
+    type: "combineSelections",
+    selections: [
+      { id: upper, start: 1, end: 3, quote: "过期" },
+      { id: lower, start: 0, end: 2, quote: "戊己" },
+    ],
+  }, files), /选中文字已变化/);
+});
 test("paragraph text, completion, selected marks and comments persist without shifting old marks", () => {
   let doc = edit(undefined, {
     type: "import",
@@ -178,9 +266,13 @@ test("primary/alternate is paragraph-scoped; split, merge, unlink and soft remov
   assert.equal(doc.paragraphs[0].links[0].role, "primary");
   assert.equal(doc.paragraphs[1].links[0].role, "alternate");
   assert.equal(a.status, "candidate");
-  doc = edit(doc, { type: "split", id: first, at: 4 }, files);
+  const beforeSplitLinks = structuredClone(doc.paragraphs[0].links);
+  doc = edit(doc, { type: "split", id: first, at: 2 }, files);
   assert.equal(doc.paragraphs.length, 3);
-  assert.deepEqual(doc.paragraphs[0].links, doc.paragraphs[1].links);
+  assert.equal(doc.paragraphs[0].text, "相同");
+  assert.equal(doc.paragraphs[1].text, "素材服务第一段");
+  assert.deepEqual(doc.paragraphs[0].links, beforeSplitLinks);
+  assert.deepEqual(doc.paragraphs[1].links, []);
   doc = edit(doc, { type: "merge", id: first }, files);
   assert.equal(doc.paragraphs.length, 2);
   assert.equal(doc.removed.length, 1);
@@ -191,6 +283,39 @@ test("primary/alternate is paragraph-scoped; split, merge, unlink and soft remov
   assert.equal(doc.paragraphs.length, 1);
   doc = edit(doc, { type: "restore", id: second }, files);
   assert.equal(doc.paragraphs.length, 2);
+});
+test("merging adjacent paragraphs retains every distinct video reference and source role safely", async () => {
+  const files = await assets();
+  const blob = new Blob(["second-video"], { type: "video/mp4" });
+  const secondVideo = {
+    ...files[2],
+    id: crypto.randomUUID(),
+    name: "第二段视频.mp4",
+    relativePath: `media/${crypto.randomUUID()}.mp4`,
+    size: blob.size,
+    hash: await hashBlob(blob),
+    blob,
+  };
+  files.push(secondVideo);
+  let doc = edit(undefined, {
+    type: "import",
+    text: "第一段已选视频\n\n第二段也已选视频",
+    mode: "blank",
+  }, files);
+  const [firstId, secondId] = doc.paragraphs.map((p) => p.id);
+  doc = edit(doc, { type: "link", id: firstId, assetIds: [files[2].id] }, files);
+  doc = edit(doc, { type: "primary", id: firstId, assetId: files[2].id }, files);
+  doc = edit(doc, { type: "link", id: secondId, assetIds: [secondVideo.id] }, files);
+  doc = edit(doc, { type: "primary", id: secondId, assetId: secondVideo.id }, files);
+  const expected = [files[2].id, secondVideo.id];
+
+  doc = edit(doc, { type: "merge", id: firstId }, files);
+
+  assert.deepEqual(doc.paragraphs[0].links.map((link) => link.assetId), expected);
+  assert.equal(doc.paragraphs[0].links[0].role, "primary");
+  assert.equal(doc.paragraphs[0].links[1].role, "alternate");
+  assert.deepEqual(doc.removed[0].paragraph.links.map((link) => link.assetId), [secondVideo.id]);
+  assert.equal(files.length, 4);
 });
 test("paragraph-linked media can be reordered without changing links or roles", async () => {
   const files = await assets();
@@ -432,6 +557,55 @@ test("handoff contains playable original references, primary labels and comments
   assert.equal(exported.paragraphs[0].links.length, 1);
   assert.equal(doc.paragraphs[0].links.length, 3);
 });
+test("video-only editing export numbers paragraph options and exports only the current stack version", async () => {
+  const base = await assets();
+  const makeVideo = async (name, bytes, extra = {}) => {
+    const blob = new Blob([bytes], { type: "video/mp4" });
+    return {
+      ...base[2],
+      id: crypto.randomUUID(),
+      name,
+      relativePath: `media/${crypto.randomUUID()}.mp4`,
+      size: blob.size,
+      hash: await hashBlob(blob),
+      blob,
+      ...extra,
+    };
+  };
+  const stackId = crypto.randomUUID();
+  const oldVersion = await makeVideo("旧版本.mp4", Buffer.from("old"), {
+    stackId,
+    stackOrder: 1,
+  });
+  const currentVersion = await makeVideo("最终版本.mp4", Buffer.from("current"), {
+    stackId,
+    stackOrder: 2,
+    status: "final",
+  });
+  const alternate = await makeVideo("备选.mp4", Buffer.from("alternate"));
+  const later = await makeVideo("后续.mp4", Buffer.from("later"));
+  const files = [...base, oldVersion, currentVersion, alternate, later];
+  let doc = edit(undefined, { type: "import", text: "第一段\n\n第二段", mode: "blank" }, files);
+  doc = edit(doc, { type: "link", id: doc.paragraphs[0].id, assetIds: [oldVersion.id, alternate.id] }, files);
+  doc = edit(doc, { type: "link", id: doc.paragraphs[1].id, assetIds: [later.id] }, files);
+  const result = await buildEditingVideos(doc, files, async (asset) => asset.blob);
+  const zip = await readZip(result.blob);
+  assert.deepEqual(
+    [...zip.keys()],
+    [
+      "剪辑视频/01-1_最终版本.mp4",
+      "剪辑视频/01-2_备选.mp4",
+      "剪辑视频/02_后续.mp4",
+    ],
+  );
+  assert.deepEqual(
+    [...zip.get("剪辑视频/01-1_最终版本.mp4")],
+    [...new Uint8Array(await currentVersion.blob.arrayBuffer())],
+  );
+  assert.equal(result.fileCount, 3);
+  assert.match(result.name, /剪辑视频\.zip$/);
+  assert.ok(![...zip.keys()].some((name) => name.includes("旧版本")));
+});
 test("native project stores revisioned editing metadata, includes it in export and reopens it", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "weave-editing-test-"));
   t.after(async () => {
@@ -495,16 +669,22 @@ test("editing UI connects real copy drops, separate paragraph roles, audio and t
   assert.match(card, /onDragEnter=/);
   assert.ok((card.match(/dropEffect = "copy"/g) || []).length >= 2);
   assert.match(card, /onDropFiles\(Array.from\(event.dataTransfer.files\)\)/);
-  assert.match(card, /addEventListener\("pointerdown", closeOnOutside, true\)/);
-  assert.match(card, /!menu\.contains\(event\.target\)/);
-  assert.match(card, /event\.key === "Escape" && menu\?\.open/);
+  assert.match(card, /移除段落（可恢复）/);
+  assert.match(card, /action\(\{ type: "remove" \}\)/);
   assert.match(card, /onClick=\{\(event\) => \{[\s\S]*?enterEditingAt\(splitAt\.current\)/);
-  assert.match(card, /type: "split",\s*at: editRef\.current[\s\S]*?getTextCaret\(editRef\.current\) \?\? splitAt\.current/);
-  assert.match(card, /contentEditable\s+suppressContentEditableWarning/);
+  assert.match(card, /onPointerDown=\{\(event\) => \{[\s\S]*?getTextCaret\(editRef\.current\)[\s\S]*?splitAt\.current = caret/);
+  assert.match(card, /splitPointerAt\.current = caret/);
+  assert.match(card, /const at = splitPointerAt\.current \?\? splitAt\.current/);
+  assert.match(card, /if \(draft !== p\.text && !\(await saveTextRef\.current\(\)\)\) return/);
+  assert.match(card, /return element\.selectionStart/);
+  assert.match(card, /setSelectionRange\(caret, caret\)/);
+  assert.match(card, /textOffsetAtPoint\(textRef\.current, event\.clientX, event\.clientY\)/);
+  assert.match(card, /data-note-dirty=\{note\.trim\(\) \? "true" : undefined\}/);
+  assert.match(card, /<textarea[\s\S]*?value=\{draft\}/);
   assert.match(card, /className="paragraph-text is-editing"/);
   assert.match(card, /setTimeout\(\(\) => \{[\s\S]*?saveTextRef\.current\(\);\s*\}, 600\)/);
   assert.match(card, /onBlur=\{\(\) => \{[\s\S]*?saveTextRef\.current\(\)/);
-  assert.match(card, /className="paragraph-editor">[\s\S]*?contentEditable\s+suppressContentEditableWarning/);
+  assert.match(card, /className="paragraph-editor">[\s\S]*?<textarea/);
   assert.doesNotMatch(card, /className="paragraph-editor-actions"/);
   assert.doesNotMatch(card, /从光标拆段/);
   assert.match(card, /role="status"[\s\S]*?已复制/);
@@ -520,26 +700,35 @@ test("editing UI connects real copy drops, separate paragraph roles, audio and t
   assert.doesNotMatch(card, /Pencil(Simple)?/);
   assert.match(card, /type: "deleteNote", noteId: item\.id/);
   assert.match(card, /删除这条留言/);
+  assert.match(card, /application\/weave-text-selection/);
+  assert.match(card, /onStageSelection\(\{ id: p\.id, \.\.\.(?:selected|selection) \}\)/);
   const workspace = await fs.readFile(
     new URL("../src/features/EditingWorkspace.tsx", import.meta.url),
     "utf8",
   );
   assert.match(workspace, /writeAssetDrag\(event.dataTransfer, members\)/);
   assert.match(workspace, /buildEditingHandoff/);
-  assert.match(workspace, /aria-label="复制完整文稿"/);
+  assert.doesNotMatch(workspace, /只看主选|复制全文|aria-label="文稿名称"/);
+  assert.match(workspace, /aria-label="搜索文稿与批注"/);
   assert.match(workspace, /导出完整文稿/);
   assert.match(workspace, /URL\.createObjectURL\(new Blob\(\["\\uFEFF", text\]/);
   assert.match(workspace, /draftTexts\.current\.get\(paragraph\.id\)/);
   assert.doesNotMatch(workspace, /追加文稿/);
   assert.doesNotMatch(workspace, /hasDocument=\{!!paragraphs\.length\}/);
-  assert.match(workspace, /navigator\.clipboard\.writeText\(text\)/);
   assert.match(workspace, /draftTexts\.current\.get\(paragraph\.id\)/);
-  assert.match(workspace, /完整文稿已复制/);
-  assert.match(workspace, /按住 Shift 选择相邻段落/);
+  assert.match(workspace, /再点击一个相邻段落，或按住 Shift 选择范围/);
+  assert.match(workspace, /index === start - 1 \|\| index === end \+ 1/);
+  assert.match(workspace, /\.editing-paragraph\[data-note-dirty="true"\]/);
+  assert.match(workspace, /for \(const \[id, text\] of \[\.\.\.draftTexts\.current\]\)/);
   assert.match(workspace, /count: mergeIndexes\.length - 1/);
   assert.match(workspace, /交接包已生成并请求下载/);
   assert.match(workspace, /Ctrl\+Z/);
+  assert.match(workspace, /window\.addEventListener\("keydown", onKeyDown\)/);
+  assert.match(workspace, /contenteditable="true"/);
+  assert.match(workspace, /past\.current\.push\(\{ document: before, revision: revision\.current, label: actionLabel\(action\) \}\)/);
   assert.match(workspace, /restoreDocument/);
+  assert.match(workspace, /type: "combineSelections", selections: stagedSelections/);
+  assert.match(workspace, /合并为独立段/);
   const media = await fs.readFile(
     new URL("../src/features/editing/ReferenceMedia.tsx", import.meta.url),
     "utf8",

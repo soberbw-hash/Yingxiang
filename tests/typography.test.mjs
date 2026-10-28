@@ -40,7 +40,7 @@ test("UI, dialog, shortcut and storyboard labels share HarmonyOS typography with
     app,
     /<strong>\{projectLabel\(snapshot\?\.project\) \|\| "创建一个项目"\}<\/strong>/,
   );
-  assert.ok(settings.includes("字体与许可"));
+  assert.ok(!settings.includes("字体与许可"));
   assert.ok(storyboard.includes("document.fonts.load"));
   assert.ok(
     storyboard.includes(

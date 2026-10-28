@@ -10,6 +10,7 @@ import {
 
 const expected = {
   uncategorized: ["未分类", "灰"],
+  product: ["产品", "蓝紫"],
   character: ["角色", "紫"],
   scene: ["场景", "绿"],
   prop: ["道具", "金棕"],
@@ -31,12 +32,21 @@ test("every category has a distinct semantic palette", () => {
     assert.deepEqual([theme.label, theme.color], expected[id]);
     for (const color of [theme.ink, theme.background, theme.border])
       assert.match(color, /^#[0-9A-F]{6}$/);
+    if (id === "prop") continue; // Legacy props are presented as unclassified.
     assert.deepEqual(assetCategoryStyle(id), {
       "--category-ink": theme.ink,
       "--category-bg": theme.background,
       "--category-border": theme.border,
     });
   }
+});
+
+test("legacy props are visible under unclassified without changing their records", () => {
+  const asset = { kind: "image", category: "prop" };
+  assert.equal(matchesCategory(asset, "uncategorized"), true);
+  assert.equal(assetCategoryTheme("prop"), assetCategoryThemes.uncategorized);
+  assert.equal(asset.category, "prop");
+  assert.equal(categories.some(c => c.id === "prop"), false);
 });
 
 test("audio includes legacy originals while Other remains distinct from Unclassified", () => {

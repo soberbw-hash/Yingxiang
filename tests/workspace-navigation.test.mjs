@@ -60,7 +60,7 @@ test("opening renamed staging reuses the existing inbox and preserves files and 
   assert.equal(await after.media[0].blob.text(), await file.text());
 });
 
-test("staging sits under All Projects and Notifications remains separate in bottom utilities", async () => {
+test("staging entry is removed while legacy data remains reachable from projects", async () => {
   const app = await readFile(
     new URL("../src/App.tsx", import.meta.url),
     "utf8",
@@ -69,11 +69,11 @@ test("staging sits under All Projects and Notifications remains separate in bott
     app.indexOf('<aside className="sidebar">'),
     app.indexOf("</aside>"),
   );
-  assert.ok(sidebar.indexOf("全部项目") < sidebar.indexOf("待整理"));
-  assert.ok(
-    sidebar.indexOf("待整理") <
-      sidebar.indexOf('className="sidebar-label">当前项目'),
-  );
+  assert.doesNotMatch(sidebar, /待整理/);
+  assert.doesNotMatch(app, /ensureInbox|__inbox/);
+  assert.match(app, /请先选择或新建项目，再导入素材/);
+  const home = await readFile(new URL("../src/components/ProjectHome.tsx", import.meta.url), "utf8");
+  assert.match(home, /旧待整理素材（保留）/);
   assert.ok(
     sidebar.indexOf('className="sidebar-bottom"') <
       sidebar.indexOf("<span>通知</span>"),

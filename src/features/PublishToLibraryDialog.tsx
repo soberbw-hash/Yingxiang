@@ -67,7 +67,7 @@ export function PublishToLibraryDialog({
             }
           >
             <option value="">沿用素材分类</option>
-            {libraryGroups.map((item) => (
+            {libraryGroups.filter((item) => item.id !== "prop").map((item) => (
               <option value={item.id} key={item.id}>
                 {item.label}
               </option>

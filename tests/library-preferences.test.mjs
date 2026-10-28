@@ -22,6 +22,7 @@ test("category URL drops only accept explicit HTTP media addresses", () => {
   );
   assert.equal(droppedMediaUrl(transfer("file:///private.png")), "");
   assert.equal(droppedMediaUrl(transfer("javascript:alert(1)")), "");
+  assert.equal(droppedMediaUrl({ getData: (type) => type === "text/plain" ? "https://example.test/voice.mp3" : "" }), "https://example.test/voice.mp3");
 });
 
 test("library display defaults to square thumbnails and hover filenames", () => {

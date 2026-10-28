@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
@@ -19,60 +20,70 @@ import {
   type StackAction,
 } from "../../../shared/asset-stacks.mjs";
 
-function moveTextCaret(element: HTMLElement, offset: number) {
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-  const range = document.createRange();
-  let node = walker.nextNode();
-  let remaining = Math.max(0, offset);
-  while (node) {
-    const length = node.textContent?.length || 0;
-    if (remaining <= length) {
-      range.setStart(node, remaining);
-      range.collapse(true);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      return;
-    }
-    remaining -= length;
-    node = walker.nextNode();
-  }
-  range.selectNodeContents(element);
-  range.collapse(false);
-  const selection = window.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
+function getTextCaret(element: HTMLTextAreaElement) {
+  return element.selectionStart;
 }
 
-function getTextCaret(element: HTMLElement) {
-  const selection = window.getSelection();
-  if (!selection?.rangeCount || !element.contains(selection.anchorNode)) return undefined;
+function textOffsetAtPoint(element: HTMLElement, x: number, y: number) {
+  const pointDocument = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => {
+      offsetNode: Node;
+      offset: number;
+    } | null;
+  };
+  const range = document.caretRangeFromPoint?.(x, y);
+  if (range && element.contains(range.startContainer)) {
+    const prefix = range.cloneRange();
+    prefix.selectNodeContents(element);
+    prefix.setEnd(range.startContainer, range.startOffset);
+    return prefix.toString().length;
+  }
+  const position = pointDocument.caretPositionFromPoint?.(x, y);
+  if (!position || !element.contains(position.offsetNode)) return undefined;
   const prefix = document.createRange();
   prefix.selectNodeContents(element);
-  prefix.setEnd(selection.anchorNode!, selection.anchorOffset);
+  prefix.setEnd(position.offsetNode, position.offset);
   return prefix.toString().length;
 }
 
-function insertPlainText(element: HTMLElement, text: string) {
+function getSelectionOffsets(element: HTMLElement) {
   const selection = window.getSelection();
-  const range = selection?.rangeCount
-    ? selection.getRangeAt(0)
-    : document.createRange();
-  if (!selection?.rangeCount || !element.contains(range.commonAncestorContainer)) {
-    range.selectNodeContents(element);
-    range.collapse(false);
-  }
-  range.deleteContents();
-  const node = document.createTextNode(text);
-  range.insertNode(node);
-  range.setStartAfter(node);
-  range.collapse(true);
-  selection?.removeAllRanges();
-  selection?.addRange(range);
+  if (!selection?.rangeCount || selection.isCollapsed) return undefined;
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return undefined;
+  const prefix = range.cloneRange();
+  prefix.selectNodeContents(element);
+  prefix.setEnd(range.startContainer, range.startOffset);
+  const start = prefix.toString().length;
+  return { start, end: start + range.toString().length };
+}
+
+function selectedTextRects(textarea: HTMLTextAreaElement, start: number, end: number) {
+  const rect = textarea.getBoundingClientRect(), style = getComputedStyle(textarea);
+  const mirror = document.createElement("div");
+  for (const property of ["box-sizing", "font", "font-size", "font-family", "font-weight", "font-style", "letter-spacing", "line-height", "text-indent", "text-transform", "padding", "border", "word-spacing", "tab-size", "overflow-wrap", "word-break"])
+    mirror.style.setProperty(property, style.getPropertyValue(property));
+  Object.assign(mirror.style, { position: "fixed", left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, whiteSpace: "pre-wrap", overflow: "hidden", visibility: "hidden", pointerEvents: "none", zIndex: "-1" });
+  const before = document.createElement("span");
+  before.textContent = textarea.value.slice(0, start);
+  mirror.append(before);
+  const selection = document.createElement("span");
+  selection.textContent = textarea.value.slice(start, end);
+  const after = document.createElement("span");
+  after.textContent = textarea.value.slice(end);
+  mirror.append(selection, after);
+  document.body.appendChild(mirror);
+  mirror.scrollTop = textarea.scrollTop;
+  mirror.scrollLeft = textarea.scrollLeft;
+  const rectsOf = (element: HTMLElement) => Array.from(element.getClientRects()).filter(item => item.width && item.height).map(item => ({ left: item.left, right: item.right, top: item.top, bottom: item.bottom }));
+  const rects = rectsOf(selection), occupied = [...rectsOf(before), ...rects, ...rectsOf(after)];
+  mirror.remove();
+  return { rects, occupied };
 }
 
 export function ParagraphCard({
   paragraph: p,
+  projectId,
   index,
   total,
   assets,
@@ -81,8 +92,10 @@ export function ParagraphCard({
   primaryOnly,
   mergeSelected,
   onToggleMerge,
+  onStageSelection,
   onReorder,
   active,
+  workspaceActive,
   onAction,
   onDropFiles,
   onChoose,
@@ -90,6 +103,7 @@ export function ParagraphCard({
   onStackAction,
 }: {
   paragraph: EditParagraph;
+  projectId: string;
   index: number;
   total: number;
   assets: Asset[];
@@ -98,8 +112,10 @@ export function ParagraphCard({
   primaryOnly: boolean;
   mergeSelected: boolean;
   onToggleMerge: (extend: boolean) => void;
+  onStageSelection: (selection: { id: string; start: number; end: number; quote: string }) => void;
   onReorder: (sourceId: string, index: number) => Promise<boolean>;
   active: boolean;
+  workspaceActive: boolean;
   onAction: (action: EditAction) => Promise<boolean>;
   onDropFiles: (files: File[]) => Promise<void>;
   onChoose: () => void;
@@ -115,10 +131,13 @@ export function ParagraphCard({
     end: number;
     quote: string;
   }>();
+  const [selectionPosition, setSelectionPosition] = useState<{ left: number; top: number }>();
+  const selectionToolbar = useRef<HTMLDivElement>(null);
   const [dropping, setDropping] = useState(false);
-  const [reordering, setReordering] = useState(false);
+  const [reordering, setReordering] = useState<"before" | "after" | null>(null);
+  const [draggingParagraph, setDraggingParagraph] = useState(false);
   useEffect(
-    () => bindDragCleanup(window, () => setDropping(false)),
+    () => bindDragCleanup(window, () => { setDropping(false); setReordering(null); setDraggingParagraph(false); }),
     [],
   );
   const [copied, setCopied] = useState(false);
@@ -126,9 +145,65 @@ export function ParagraphCard({
   const [saveState, setSaveState] = useState<"idle" | "pending" | "saving" | "error">("idle");
   const [retrySave, setRetrySave] = useState(0);
   const splitAt = useRef(0);
+  const splitPointerAt = useRef<number | undefined>(undefined);
   const textRef = useRef<HTMLDivElement>(null),
-    editRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDetailsElement>(null);
+    editRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    if (!selected || !workspaceActive) { setSelectionPosition(undefined); return; }
+    const update = () => {
+      const field = editing ? editRef.current : textRef.current;
+      const toolbar = selectionToolbar.current;
+      if (!field || !toolbar) return;
+      let rects: { left: number; right: number; top: number; bottom: number }[] = [];
+      let occupied: typeof rects = [];
+      if (field instanceof HTMLTextAreaElement) ({ rects, occupied } = selectedTextRects(field, selected.start, selected.end));
+      else {
+        const selection = window.getSelection();
+        if (selection?.rangeCount && field.contains(selection.getRangeAt(0).startContainer) && field.contains(selection.getRangeAt(0).endContainer)) {
+          const range = selection.getRangeAt(0);
+          rects = Array.from(range.getClientRects()).filter(r => r.width && r.height);
+          const before = range.cloneRange(), after = range.cloneRange();
+          before.selectNodeContents(field); before.setEnd(range.startContainer, range.startOffset);
+          after.selectNodeContents(field); after.setStart(range.endContainer, range.endOffset);
+          occupied = [...Array.from(before.getClientRects()), ...rects, ...Array.from(after.getClientRects())].filter(r => r.right > r.left && r.bottom > r.top);
+        }
+      }
+      const scroll = field.closest(".editing-scroll")?.getBoundingClientRect();
+      const bottomLimit = Math.min(window.innerHeight, scroll?.bottom ?? window.innerHeight) - 8;
+      const topLimit = Math.max(0, scroll?.top ?? 0) + 8;
+      const last = rects[rects.length - 1];
+      if (!last || last.bottom < topLimit || last.top > bottomLimit) { setSelectionPosition(undefined); return; }
+      const height = toolbar.offsetHeight, width = toolbar.offsetWidth;
+      const left = Math.max(8, Math.min(last.left, window.innerWidth - width - 8));
+      const firstTop = Math.min(...rects.map(r => r.top));
+      const fieldBounds = field.getBoundingClientRect();
+      const candidates = [
+        { left, top: last.bottom + 8 },
+        { left, top: firstTop - height - 8 },
+        { left: fieldBounds.right + 8, top: last.bottom + 8 },
+        { left: fieldBounds.left - width - 8, top: last.bottom + 8 },
+        { left, top: fieldBounds.bottom + 8 },
+        { left, top: fieldBounds.top - height - 8 },
+      ];
+      const position = candidates.find(candidate => candidate.left >= 8 && candidate.left + width <= window.innerWidth - 8 && candidate.top >= topLimit && candidate.top + height <= bottomLimit && !occupied.some(r => candidate.left < r.right && candidate.left + width > r.left && candidate.top < r.bottom && candidate.top + height > r.top));
+      setSelectionPosition(position);
+    };
+    update();
+    document.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => { document.removeEventListener("scroll", update, true); window.removeEventListener("resize", update); };
+  }, [selected, editing, draft, workspaceActive]);
+  useEffect(() => {
+    if (!selected || !workspaceActive) return;
+    const dismissStaleSelection = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (textRef.current?.contains(target) || editRef.current?.contains(target) || selectionToolbar.current?.contains(target)) return;
+      setSelected(undefined);
+    };
+    document.addEventListener("pointerdown", dismissStaleSelection, true);
+    return () => document.removeEventListener("pointerdown", dismissStaleSelection, true);
+  }, [selected, workspaceActive]);
   const previousText = useRef(p.text),
     saveAttempt = useRef(0),
     onActionRef = useRef(onAction),
@@ -136,22 +211,29 @@ export function ParagraphCard({
   onActionRef.current = onAction;
   useEffect(() => () => onTextDraftChange(p.id, null), [onTextDraftChange, p.id]);
   const dirty = (editing && draft !== p.text) || !!note.trim();
-  useEffect(() => setSelected(undefined), [p.text]);
+  useEffect(() => {
+    const field = editRef.current;
+    if (field && field.selectionEnd > field.selectionStart) {
+      const start = field.selectionStart, end = field.selectionEnd;
+      setSelected({ start, end, quote: field.value.slice(start, end) });
+    } else setSelected(undefined);
+  }, [p.text]);
   useLayoutEffect(() => {
     const editable = editRef.current;
-    if (!editing || !editable) return;
-    if (
-      editable.innerText !== p.text &&
-      (draft === p.text || draft === previousText.current)
-    ) {
-      editable.innerText = p.text;
-      setDraft(p.text);
+    if (editing && editable) {
+      if (
+        editable.value !== p.text &&
+        (draft === p.text || draft === previousText.current)
+      )
+        setDraft(p.text);
+      editable.style.height = "auto";
+      editable.style.height = `${Math.max(56, editable.scrollHeight)}px`;
     }
     previousText.current = p.text;
   }, [draft, editing, p.text]);
   const saveTextRef = useRef<() => Promise<boolean>>(async () => true);
   saveTextRef.current = async () => {
-    const text = (editRef.current?.innerText ?? draft).replace(/\r\n/g, "\n");
+    const text = (editRef.current?.value ?? draft).replace(/\r\n/g, "\n");
     if (text === p.text) {
       setSaveState("idle");
       return true;
@@ -159,8 +241,9 @@ export function ParagraphCard({
     const attempt = ++saveAttempt.current;
     setSaveState("saving");
     const saved = await onActionRef.current({ type: "text", id: p.id, text });
-    if (saved) onTextDraftChange(p.id, null);
-    if (attempt === saveAttempt.current) setSaveState(saved ? "idle" : "error");
+    const latest = editRef.current?.value ?? draft;
+    if (saved) onTextDraftChange(p.id, latest === text ? null : latest);
+    if (attempt === saveAttempt.current) setSaveState(saved ? latest === text ? "idle" : "pending" : "error");
     return saved;
   };
   useEffect(() => {
@@ -179,26 +262,6 @@ export function ParagraphCard({
       if (autoSaveTimer.current === timer) autoSaveTimer.current = undefined;
     };
   }, [draft, editing, p.text, retrySave]);
-  useEffect(() => {
-    const closeOnOutside = (event: PointerEvent) => {
-      const menu = menuRef.current;
-      if (menu?.open && event.target instanceof Node && !menu.contains(event.target))
-        menu.open = false;
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      const menu = menuRef.current;
-      if (event.key === "Escape" && menu?.open) {
-        menu.open = false;
-        menu.querySelector("summary")?.focus();
-      }
-    };
-    document.addEventListener("pointerdown", closeOnOutside, true);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutside, true);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, []);
   useEffect(() => {
     const prevent = (event: BeforeUnloadEvent) => {
       if (dirty) {
@@ -222,15 +285,22 @@ export function ParagraphCard({
       available.has(link.assetId) && (!primaryOnly || link.role === "primary"),
   );
   const action = (value: EditAction) => onAction({ ...value, id: p.id });
+  const rememberSplitCaret = (textarea: HTMLTextAreaElement) => {
+    splitAt.current = textarea.selectionStart;
+    const start = textarea.selectionStart, end = textarea.selectionEnd;
+    setSelected(end > start ? { start, end, quote: textarea.value.slice(start, end) } : undefined);
+  };
   const enterEditingAt = (position = splitAt.current) => {
     setDraft(p.text);
     setEditing(true);
     requestAnimationFrame(() => {
       const textarea = editRef.current;
       if (!textarea) return;
-      const caret = Math.max(0, Math.min(position, textarea.innerText.length));
+      const caret = Math.max(0, Math.min(position, textarea.value.length));
       textarea.focus();
-      moveTextCaret(textarea, caret);
+      textarea.setSelectionRange(caret, caret);
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.max(56, textarea.scrollHeight)}px`;
     });
   };
   const groups = groupAssets(
@@ -251,39 +321,61 @@ export function ParagraphCard({
     void action({ type: "reorderLinks", assetIds: ids });
   };
   const selectText = () => {
-    const selection = window.getSelection();
-    if (!selection?.rangeCount || !textRef.current) return;
-    const range = selection.getRangeAt(0);
-    if (
-      !textRef.current.contains(range.startContainer) ||
-      !textRef.current.contains(range.endContainer) ||
-      range.collapsed
-    ) {
+    if (!textRef.current) return;
+    const offsets = getSelectionOffsets(textRef.current);
+    if (!offsets) {
       setSelected(undefined);
       return;
     }
-    const prefix = range.cloneRange();
-    prefix.selectNodeContents(textRef.current);
-    prefix.setEnd(range.startContainer, range.startOffset);
-    const start = prefix.toString().length,
-      end = start + range.toString().length;
-    setSelected({ start, end, quote: p.text.slice(start, end) });
+    setSelected({ ...offsets, quote: p.text.slice(offsets.start, offsets.end) });
   };
   return (
     <article
-      className={`editing-paragraph ${p.generated ? "is-generated" : ""} ${dropping ? "is-dropping" : ""} ${reordering ? "is-reordering" : ""} ${mergeSelected ? "is-merge-selected" : ""} ${active ? "is-active" : ""}`}
+      className={`editing-paragraph ${p.generated ? "is-generated" : ""} ${dropping ? "is-dropping" : ""} ${reordering ? `is-reordering-${reordering}` : ""} ${draggingParagraph ? "is-dragging-paragraph" : ""} ${mergeSelected ? "is-merge-selected" : ""} ${active ? "is-active" : ""}`}
+      data-paragraph-id={p.id}
       data-editing-dirty={dirty ? "true" : undefined}
+      data-note-dirty={note.trim() ? "true" : undefined}
+      data-save-state={saveState}
       onDragStart={(event) => {
-        if (!(event.target as Element).closest(".paragraph-reorder-handle")) return;
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("application/weave-paragraph", p.id);
+        const target = event.target as Element;
+        if (target.closest(".paragraph-reorder-handle")) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("application/weave-paragraph", p.id);
+          setDraggingParagraph(true);
+          return;
+        }
+        const textElement = target.closest(".paragraph-text");
+        const offsets = textElement && getSelectionOffsets(textElement as HTMLElement);
+        if (!offsets) {
+          event.preventDefault();
+          return;
+        }
+        const quote = p.text.slice(offsets.start, offsets.end);
+        if (!quote || quote !== window.getSelection()?.toString()) {
+          event.preventDefault();
+          return;
+        }
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData("application/weave-text-selection", JSON.stringify({
+          id: p.id,
+          ...offsets,
+          quote,
+        }));
+        event.dataTransfer.setData("text/plain", quote);
       }}
-      onDragEnd={() => setReordering(false)}
+      onDragEnd={() => { setReordering(null); setDraggingParagraph(false); }}
       onDragEnter={(event) => {
         if (event.dataTransfer.types.includes("application/weave-paragraph")) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
-          setReordering(true);
+          const rect = event.currentTarget.getBoundingClientRect();
+          setReordering(event.clientY > rect.top + rect.height / 2 ? "after" : "before");
+          return;
+        }
+        if (event.dataTransfer.types.includes("application/weave-text-selection")) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+          setDropping(true);
           return;
         }
         if (
@@ -300,7 +392,20 @@ export function ParagraphCard({
         if (event.dataTransfer.types.includes("application/weave-paragraph")) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
-          setReordering(true);
+          const rect = event.currentTarget.getBoundingClientRect();
+          setReordering(event.clientY > rect.top + rect.height / 2 ? "after" : "before");
+          const scroll = event.currentTarget.closest(".editing-scroll");
+          if (scroll) {
+            const bounds = scroll.getBoundingClientRect();
+            if (event.clientY < bounds.top + 70) scroll.scrollBy(0, -18);
+            else if (event.clientY > bounds.bottom - 70) scroll.scrollBy(0, 18);
+          }
+          return;
+        }
+        if (event.dataTransfer.types.includes("application/weave-text-selection")) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+          setDropping(true);
           return;
         }
         if (
@@ -317,15 +422,28 @@ export function ParagraphCard({
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node)) {
           setDropping(false);
-          setReordering(false);
+          setReordering(null);
         }
       }}
       onDrop={(event) => {
         event.preventDefault();
         event.stopPropagation();
         setDropping(false);
-        setReordering(false);
+        setReordering(null);
         if (busy) return;
+        const selectionRaw = event.dataTransfer.getData("application/weave-text-selection");
+        if (selectionRaw) {
+          try {
+            const selection: unknown = JSON.parse(selectionRaw);
+            if (selection && typeof selection === "object" &&
+              typeof (selection as { id?: unknown }).id === "string" &&
+              Number.isInteger((selection as { start?: unknown }).start) &&
+              Number.isInteger((selection as { end?: unknown }).end) &&
+              typeof (selection as { quote?: unknown }).quote === "string")
+              onStageSelection(selection as { id: string; start: number; end: number; quote: string });
+          } catch { /* unrelated or malformed text drag */ }
+          return;
+        }
         const paragraphId = event.dataTransfer.getData("application/weave-paragraph");
         if (paragraphId) {
           if (paragraphId !== p.id) {
@@ -372,7 +490,7 @@ export function ParagraphCard({
                 }
               }}
             ><DotsSixVertical size={14} /></span>
-            <button type="button" className={`paragraph-number ${mergeSelected ? "is-selected" : ""}`} aria-pressed={mergeSelected} title="点击选择；按住 Shift 点击可连续选择多段" onClick={(event) => onToggleMerge(event.shiftKey)}>
+            <button type="button" className={`paragraph-number ${mergeSelected ? "is-selected" : ""}`} aria-pressed={mergeSelected} title="点击选择；继续点击相邻段落可扩展，按住 Shift 可选范围" onClick={(event) => onToggleMerge(event.shiftKey)}>
               {String(index + 1).padStart(2, "0")}
             </button>
           </span>
@@ -441,23 +559,32 @@ export function ParagraphCard({
               </span>
             )}
             <button
-              title={editing ? "从当前光标位置拆段" : "点正文进入编辑，再从光标位置拆段"}
+              title={editing ? "从当前光标位置拆段（文字会先自动保存）" : "点正文进入编辑，再从光标位置拆段"}
               aria-label={editing ? `从光标拆分第 ${index + 1} 段` : `从指定位置拆分第 ${index + 1} 段`}
-              disabled={busy || (editing ? dirty : p.text.length < 2)}
+              disabled={busy || (editing ? !!note.trim() : p.text.length < 2)}
+              onPointerDown={(event) => {
+                if (editing && editRef.current) {
+                  // Keep the editor selection alive while the toolbar button is pressed.
+                  // Browsers can move focus/selection to the button before click fires.
+                  event.preventDefault();
+                  const caret = getTextCaret(editRef.current);
+                  if (caret !== undefined) {
+                    splitAt.current = caret;
+                    splitPointerAt.current = caret;
+                  }
+                }
+              }}
               onClick={async () => {
                 if (!editing) {
                   enterEditingAt();
                   return;
                 }
-                if (
-                  await action({
-                    type: "split",
-                    at: editRef.current
-                      ? getTextCaret(editRef.current) ?? splitAt.current
-                      : splitAt.current,
-                  })
-                )
-                  setEditing(false);
+                // Use the position captured on pointerdown. Reading Selection here is
+                // too late: some browsers have already collapsed it outside the editor.
+                const at = splitPointerAt.current ?? splitAt.current;
+                splitPointerAt.current = undefined;
+                if (draft !== p.text && !(await saveTextRef.current())) return;
+                if (await action({ type: "split", at })) setEditing(false);
               }}
             >
               <Scissors size={15} />
@@ -471,72 +598,40 @@ export function ParagraphCard({
               <ChatCircleText size={15} />
               {p.notes.length || ""}
             </button>
-            <details ref={menuRef}>
-              <summary aria-label={`第 ${index + 1} 段更多操作`}>···</summary>
-              <div className="paragraph-menu">
-                <button
-                  disabled={busy}
-                  onClick={() => void action({ type: "remove" })}
-                >
-                  <Trash />
-                  移除段落（可恢复）
-                </button>
-              </div>
-            </details>
+            <button title="移除段落（可恢复）" aria-label={`移除第 ${index + 1} 段（可恢复）`} disabled={busy} onClick={() => void action({ type: "remove" })}>
+              <Trash size={15} />
+            </button>
           </div>
         </header>
         {editing ? (
           <div className="paragraph-editor">
-            <div
-              contentEditable
-              suppressContentEditableWarning
-              role="textbox"
-              aria-multiline="true"
+            <textarea
+              value={draft}
+              rows={1}
               aria-label={`第 ${index + 1} 段正文`}
               ref={editRef}
               className="paragraph-text is-editing"
-              data-placeholder="空段落 · 点击此处开始编辑"
-              onInput={(event) => {
-                const text = event.currentTarget.innerText;
+              placeholder="空段落 · 点击此处开始编辑"
+              onChange={(event) => {
+                const textarea = event.currentTarget;
+                const text = textarea.value;
                 setDraft(text);
                 onTextDraftChange(p.id, text);
-                const caret = getTextCaret(event.currentTarget);
-                if (caret !== undefined) splitAt.current = caret;
+                rememberSplitCaret(textarea);
+                textarea.style.height = "auto";
+                textarea.style.height = `${Math.max(56, textarea.scrollHeight)}px`;
               }}
-              onKeyUp={(event) => {
-                const caret = getTextCaret(event.currentTarget);
-                if (caret !== undefined) splitAt.current = caret;
-              }}
-              onMouseUp={(event) => {
-                const caret = getTextCaret(event.currentTarget);
-                if (caret !== undefined) splitAt.current = caret;
-              }}
+              onSelect={(event) => rememberSplitCaret(event.currentTarget)}
+              onKeyUp={(event) => rememberSplitCaret(event.currentTarget)}
+              onClick={(event) => rememberSplitCaret(event.currentTarget)}
               onBlur={() => {
-                if (editRef.current) {
-                  const caret = getTextCaret(editRef.current);
-                  if (caret !== undefined) splitAt.current = caret;
-                }
+                if (editRef.current) rememberSplitCaret(editRef.current);
                 if (autoSaveTimer.current !== undefined) {
                   window.clearTimeout(autoSaveTimer.current);
                   autoSaveTimer.current = undefined;
                 }
                 if (draft !== p.text && saveState !== "error")
                   void saveTextRef.current();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  insertPlainText(event.currentTarget, "\n");
-                  setDraft(event.currentTarget.innerText);
-                }
-              }}
-              onPaste={(event) => {
-                event.preventDefault();
-                insertPlainText(
-                  event.currentTarget,
-                  event.clipboardData.getData("text/plain"),
-                );
-                setDraft(event.currentTarget.innerText);
               }}
             />
           </div>
@@ -552,19 +647,18 @@ export function ParagraphCard({
               if (
                 selection?.rangeCount &&
                 !selection.isCollapsed &&
-                textRef.current?.contains(selection.anchorNode) &&
-                textRef.current?.contains(selection.focusNode)
+                (textRef.current?.contains(selection.anchorNode) ||
+                  textRef.current?.contains(selection.focusNode))
               )
                 return;
-              const caret = document.caretRangeFromPoint?.(event.clientX, event.clientY);
-              if (!caret || !textRef.current?.contains(caret.startContainer)) {
+              const offset = textRef.current
+                ? textOffsetAtPoint(textRef.current, event.clientX, event.clientY)
+                : undefined;
+              if (offset === undefined) {
                 enterEditingAt();
                 return;
               }
-              const prefix = caret.cloneRange();
-              prefix.selectNodeContents(textRef.current);
-              prefix.setEnd(caret.startContainer, caret.startOffset);
-              splitAt.current = prefix.toString().length;
+              splitAt.current = offset;
               enterEditingAt(splitAt.current);
             }}
             onKeyDown={(event) => {
@@ -581,12 +675,46 @@ export function ParagraphCard({
             )}
           </div>
         )}
-        {selected && !editing && (
-          <div className="paragraph-selection">
+        {selected && workspaceActive && createPortal(
+          <div ref={selectionToolbar} className="paragraph-selection" style={{ left: selectionPosition?.left ?? 0, top: selectionPosition?.top ?? 0, visibility: selectionPosition ? "visible" : "hidden" }} role="toolbar" aria-label="选中文字操作" onPointerDown={event => event.preventDefault()}>
             <span>已选文字</span>
+            <button aria-label="复制选中文字" onClick={async () => {
+              try { await navigator.clipboard.writeText(selected.quote); setCopied(true); setCopyFailed(false); window.setTimeout(() => setCopied(false), 1400); }
+              catch { setCopyFailed(true); }
+            }}><CopySimple size={13} />{copied ? "已复制" : "复制"}</button>
+            <button
+              disabled={busy}
+              title="把选中文字拆成独立段落，插在原位置；剩余文字保持原顺序"
+              onClick={async () => {
+                const selection = selected;
+                if (editing && draft !== p.text && !(await saveTextRef.current())) return;
+                if (
+                  await action({
+                    type: "extractSelection",
+                    start: selection.start,
+                    end: selection.end,
+                    quote: selection.quote,
+                  })
+                )
+                  setSelected(undefined);
+              }}
+            >
+              <Scissors size={13} />
+              拆为独立段
+            </button>
             <button onClick={() => setNotes(true)}>批注</button>
+            <button
+              title="暂存这段文字，之后可与其他段落的选中文字合并为独立段"
+              onClick={async () => {
+                const selection = selected;
+                if (editing && draft !== p.text && !(await saveTextRef.current())) return;
+                onStageSelection({ id: p.id, ...selection });
+              }}
+            >
+              加入合并
+            </button>
             <button onClick={() => setSelected(undefined)}>取消</button>
-          </div>
+          </div>, document.body
         )}
         {notes && (
           <div className="paragraph-notes">
@@ -671,6 +799,7 @@ export function ParagraphCard({
             return (
               <ReferenceMedia
                 key={group.key}
+                projectId={projectId}
                 asset={asset}
                 members={group.members}
                 onStackAction={onStackAction}

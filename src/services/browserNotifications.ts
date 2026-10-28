@@ -97,12 +97,12 @@ export function notifyBrowserTask(
     {
       enabled,
       title: failed
-        ? "Weave · 任务未完成"
-        : `Weave · ${importing ? "导入完成" : "导出已生成"}`,
+        ? "映箱 · 任务未完成"
+        : `映箱 · ${importing ? "导入完成" : "导出已生成"}`,
       body: failed
-        ? "请返回 Weave 查看错误详情。"
+        ? "请返回映箱 查看错误详情。"
         : importing
-          ? "素材已写入本机项目。返回 Weave 继续整理。"
+          ? "素材已写入本机项目。返回映箱 继续整理。"
           : "ZIP 已生成并请求浏览器下载，请在下载列表确认保存结果。",
       // Replace related pending toasts instead of one notification per file.
       tag: `weave-task-${method}`,

@@ -444,6 +444,7 @@ async function invokeFolder(method: string, payload: Record<string, unknown>) {
     !folder ||
     (!writeMethods.has(method) &&
       method !== "selectProject" &&
+      method !== "exportBackup" &&
       method !== "exportProject")
   )
     return browserInvoke(method, payload);

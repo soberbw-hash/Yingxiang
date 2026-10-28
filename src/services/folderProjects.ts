@@ -57,7 +57,7 @@ export async function loadFolderProject(root: DiskDirectory) {
     header.format !== "weave-project-folder" ||
     header.schemaVersion !== 1
   )
-    throw new Error("不是兼容的 Weave 本地项目文件夹，未修改任何文件");
+    throw new Error("不是兼容的映箱本地项目文件夹，未修改任何文件");
   const commits = await readCommits<FolderProject>(root);
   const referenced = new Set(
     commits.map((commit) => commit.parent).filter(Boolean),

@@ -4,7 +4,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 
 const OWNER = "soberbw-hash";
-const REPOSITORY = "Weave";
+const REPOSITORY = "Yingxiang";
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 
 function parseVersion(value) {

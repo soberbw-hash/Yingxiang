@@ -348,6 +348,9 @@ export function applyEditing(
         ...structuredClone(p),
         id: crypto.randomUUID(),
         text: p.text.slice(at),
+        // Keep linked media on the original (left) paragraph. Cloning links made
+        // a split look like the same video belonged to both segments.
+        links: [],
         legacyShotId: undefined,
         marks: p.marks
           .filter((m) => m.end > at)
@@ -359,6 +362,108 @@ export function applyEditing(
         .filter((m) => m.start < at)
         .map((m) => ({ start: m.start, end: Math.min(at, m.end) }));
       doc.paragraphs.splice(doc.paragraphs.indexOf(p) + 1, 0, right);
+      break;
+    }
+    case "extractSelection": {
+      const p = find(),
+        start = action.start,
+        end = action.end,
+        originalText = p.text;
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start < 0 ||
+        end <= start ||
+        end > originalText.length ||
+        !text(action.quote, 1000000) ||
+        originalText.slice(start, end) !== action.quote
+      )
+        fail("选中文字已变化，请重新选择后再拆段");
+      const base = structuredClone(p),
+        sourceMarks = structuredClone(p.marks),
+        segments = [
+          { start: 0, end: start, text: originalText.slice(0, start) },
+          { start, end, text: originalText.slice(start, end) },
+          { start: end, end: originalText.length, text: originalText.slice(end) },
+        ].filter((segment) => segment.text.length > 0);
+      if (segments.length < 2)
+        fail("这段文字已单独成段，无需再次拆分");
+      const paragraphs = segments.map((segment, index) => {
+        const next = index === 0 ? base : structuredClone(base);
+        next.id = index === 0 ? base.id : crypto.randomUUID();
+        next.text = segment.text;
+        next.marks = sourceMarks
+          .filter((mark) => mark.end > segment.start && mark.start < segment.end)
+          .map((mark) => ({
+            start: Math.max(mark.start, segment.start) - segment.start,
+            end: Math.min(mark.end, segment.end) - segment.start,
+          }));
+        if (index > 0) {
+          // New segments are independent; keep existing media only on the
+          // original paragraph, as with splitting at a caret.
+          next.links = [];
+          next.notes = [];
+          next.legacyShotId = undefined;
+        }
+        return next;
+      });
+      doc.paragraphs.splice(doc.paragraphs.indexOf(p), 1, ...paragraphs);
+      break;
+    }
+    case "combineSelections": {
+      if (!Array.isArray(action.selections) || action.selections.length < 2 || action.selections.length > 100)
+        fail("请至少加入两段选中文字");
+      const selections = action.selections.map((selection) => {
+        const p = doc.paragraphs.find((item) => item.id === selection?.id);
+        const { start, end, quote } = selection || {};
+        if (
+          !p || !Number.isInteger(start) || !Number.isInteger(end) ||
+          start < 0 || end <= start || end > p.text.length ||
+          !text(quote, 100000) || p.text.slice(start, end) !== quote
+        ) fail("选中文字已变化，请重新选择后再合并");
+        return { p, start, end, quote, index: doc.paragraphs.indexOf(p) };
+      }).sort((a, b) => a.index - b.index || a.start - b.start);
+      if (new Set(selections.map((item) => item.p.id)).size < 2)
+        fail("请从至少两个不同段落中选择文字");
+      for (let i = 1; i < selections.length; i++) {
+        const previous = selections[i - 1], current = selections[i];
+        if (previous.p.id === current.p.id && previous.end > current.start)
+          fail("同一段中的选中文字不能重叠");
+      }
+      const grouped = new Map();
+      for (const selection of selections) {
+        const ranges = grouped.get(selection.p.id) || [];
+        ranges.push(selection);
+        grouped.set(selection.p.id, ranges);
+      }
+      for (const [id, ranges] of grouped) {
+        const p = doc.paragraphs.find((item) => item.id === id);
+        const original = p.text;
+        let cursor = 0, nextText = "";
+        for (const range of ranges) {
+          nextText += original.slice(cursor, range.start);
+          cursor = range.end;
+        }
+        p.text = nextText + original.slice(cursor);
+        p.generated = false;
+        p.marks = p.marks.flatMap((mark) => {
+          let position = mark.start;
+          const kept = [];
+          for (const range of ranges) {
+            if (range.end <= position || range.start >= mark.end) continue;
+            if (range.start > position) kept.push({ start: position, end: Math.min(range.start, mark.end) });
+            position = Math.max(position, range.end);
+          }
+          if (position < mark.end) kept.push({ start: position, end: mark.end });
+          return kept.map((mark) => {
+            const removedBefore = ranges.reduce((sum, range) => sum + (range.end <= mark.start ? range.end - range.start : 0), 0);
+            return { start: mark.start - removedBefore, end: mark.end - removedBefore };
+          }).filter((mark) => mark.end > mark.start);
+        });
+      }
+      const first = selections[0],
+        combined = paragraph(selections.map((item) => item.quote).join("\n"));
+      doc.paragraphs.splice(first.index + 1, 0, combined);
       break;
     }
     case "merge": {
@@ -373,14 +478,39 @@ export function applyEditing(
         const offset = p.text.length + 2;
         p.text += "\n\n" + right.text;
         p.generated = p.generated && right.generated;
-        for (const link of right.links)
-          if (!p.links.some((item) => item.assetId === link.assetId))
-            p.links.push({
-              ...link,
-              role: p.links.some((item) => item.role === "primary")
-                ? "alternate"
-                : link.role,
-            });
+        const linksBeforeMerge = new Set(
+          [...p.links, ...right.links].map((link) => link.assetId),
+        );
+        for (const link of right.links) {
+          const existing = p.links.find((item) => item.assetId === link.assetId);
+          if (existing) {
+            // A repeated reference can carry the source paragraph's primary role.
+            // Keep that role only when the merged paragraph has no other primary.
+            if (
+              link.role === "primary" &&
+              existing.role !== "primary" &&
+              !p.links.some(
+                (item) => item !== existing && item.role === "primary",
+              )
+            )
+              existing.role = "primary";
+            continue;
+          }
+          p.links.push({
+            ...link,
+            role:
+              link.role === "primary" &&
+              !p.links.some((item) => item.role === "primary")
+                ? "primary"
+                : "alternate",
+          });
+        }
+        if (
+          [...linksBeforeMerge].some(
+            (assetId) => !p.links.some((link) => link.assetId === assetId),
+          )
+        )
+          fail("合并后素材关联校验失败，段落与素材均未删除");
         p.notes.push(
           ...structuredClone(right.notes).filter(
             (note) => !p.notes.some((existing) => existing.id === note.id),

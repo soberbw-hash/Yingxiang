@@ -8,9 +8,14 @@ import {
 } from "../src/services/libraryLayout.ts";
 import {
   prepareAudioDragFile,
+  prepareImageDragFile,
+  prepareVideoDragFile,
   writeMediaFileDrag,
+  writeImageFileDrag,
   writeAssetDrag,
   MAX_AUDIO_DRAG_BYTES,
+  MAX_IMAGE_DRAG_BYTES,
+  MAX_VIDEO_DRAG_BYTES,
 } from "../src/services/assetOutbound.ts";
 function audio(name = "旁白:原片.wav", content = "original audio bytes") {
   const blob = new Blob([content], { type: "audio/wav" });
@@ -19,6 +24,18 @@ function audio(name = "旁白:原片.wav", content = "original audio bytes") {
     kind: "audio",
     name,
     mime: "audio/wav",
+    hash: createHash("sha256").update(content).digest("hex"),
+    size: blob.size,
+    url: URL.createObjectURL(blob),
+  };
+}
+function image(name = "角色原图.png", content = "original image bytes") {
+  const blob = new Blob([content], { type: "image/png" });
+  return {
+    id: randomUUID(),
+    kind: "image",
+    name,
+    mime: "image/png",
     hash: createHash("sha256").update(content).digest("hex"),
     size: blob.size,
     url: URL.createObjectURL(blob),
@@ -127,6 +144,80 @@ test("prepared audio carries one complete verified File without replacing intern
   } finally {
     URL.revokeObjectURL(asset.url);
   }
+});
+test("prepared image keeps native image data and adds the original as a File item", async () => {
+  const asset = image();
+  try {
+    const file = await prepareImageDragFile(asset);
+    const data = transfer();
+    data.data.set("text/uri-list", asset.url);
+    data.data.set("text/html", `<img src="${asset.url}">`);
+    writeAssetDrag(data, [asset]);
+    assert.equal(writeImageFileDrag(data, asset), true);
+    assert.equal(data.files.length, 1);
+    assert.equal(data.files[0], file);
+    assert.equal(file.name, asset.name);
+    assert.equal(file.type, asset.mime);
+    assert.equal(await file.text(), "original image bytes");
+    assert.equal(data.data.get("text/uri-list"), asset.url);
+    assert.equal(data.data.get("text/html"), `<img src="${asset.url}">`);
+    assert.deepEqual(JSON.parse(data.data.get("application/weave-assets")), [asset.id]);
+    assert.equal(data.data.has("DownloadURL"), false);
+    await assert.rejects(prepareImageDragFile({ ...asset, hash: "0".repeat(64) }), /校验失败/);
+    await assert.rejects(prepareImageDragFile({ ...asset, size: MAX_IMAGE_DRAG_BYTES + 1 }), /下载原图片/);
+  } finally {
+    URL.revokeObjectURL(asset.url);
+  }
+});
+test("hover-prepared video drag carries the verified original File for external file receivers", async () => {
+  const content = "original video bytes";
+  const blob = new Blob([content], { type: "video/mp4" });
+  const asset = {
+    id: randomUUID(),
+    kind: "video",
+    name: "剪映测试:原片.mp4",
+    mime: "video/mp4",
+    hash: createHash("sha256").update(content).digest("hex"),
+    size: blob.size,
+    url: URL.createObjectURL(blob),
+  };
+  try {
+    const file = await prepareVideoDragFile(asset);
+    const data = transfer();
+    writeAssetDrag(data, [asset]);
+    assert.equal(writeMediaFileDrag(data, asset), true);
+    assert.equal(data.files.length, 1);
+    assert.equal(data.files[0], file);
+    assert.equal(file.name, "剪映测试_原片.mp4");
+    assert.equal(file.type, "video/mp4");
+    assert.equal(await file.text(), content);
+    assert.equal(
+      data.data.get("application/weave-assets"),
+      JSON.stringify([asset.id]),
+    );
+    assert.equal(data.data.has("DownloadURL"), false);
+    assert.equal(await prepareVideoDragFile(asset), file);
+    await assert.rejects(
+      prepareVideoDragFile({ ...asset, size: MAX_VIDEO_DRAG_BYTES + 1 }),
+      /下载原文件/,
+    );
+  } finally {
+    URL.revokeObjectURL(asset.url);
+  }
+});
+test("library video cards pre-read outbound files on hover and keyboard focus", async () => {
+  const thumb = await readFile(
+    new URL("../src/components/AssetThumb.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(thumb, /onPointerEnter=\{\(\) => \{[\s\S]*?prepareVideoDragFile\(asset\)/);
+  assert.match(thumb, /onFocus=\{\(\) => \{[\s\S]*?prepareVideoDragFile\(asset\)/);
+  assert.doesNotMatch(thumb, /writeImageFileDrag\(/);
+  assert.match(thumb, /writeMediaFileDrag\(event\.dataTransfer, asset\)/);
+  const reference = await readFile(new URL("../src/features/editing/ReferenceMedia.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(reference, /writeImageFileDrag\(/);
+  assert.match(reference, /prepareAudioDragFile\(asset\)/);
+  assert.match(reference, /prepareVideoDragFile\(asset\)/);
 });
 test("invalid originals, bad hashes and oversize audio are not silently prepared or passed as image files", async () => {
   const asset = audio();

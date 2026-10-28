@@ -57,6 +57,13 @@
 .public-workspace .library-controls {
   padding-top: 0;
 }
+.public-library-controls { align-items: flex-start; gap: 12px; }
+.public-category-rows { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; }
+.public-folder-row { display: flex; align-items: flex-start; gap: 10px; }
+.public-folder-row > span { flex: 0 0 auto; color: #858899; font-size: 11px; padding-top: 7px; }
+.public-folder-tabs { gap: 5px; min-width: 0; }
+.public-folder-tabs button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 4px 9px; font-size: 11px; border: 1px solid #e1e3ea; border-radius: 8px; background: #f8f9fb; color: #646c7d; }
+.public-folder-tabs button.active { color: #5d4bb7; background: #f2effb; border-color: #c6bbeb; }
 .public-workspace .asset-grid:empty {
   display: none;
 }

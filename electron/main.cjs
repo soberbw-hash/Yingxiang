@@ -190,7 +190,7 @@ function notify(snapshot) {
     Notification.isSupported()
   ) {
     const notice = new Notification({
-      title: `Weave · ${snapshot.project.name}`,
+      title: `映箱 · ${snapshot.project.name}`,
       body: `${fresh.length} 条项目更新 · ${fresh[fresh.length - 1].actor}`,
     });
     notice.on("click", () => {
@@ -339,10 +339,10 @@ function updateTray() {
   tray = new Tray(
     nativeImage.createFromBuffer(pixels, { width: 16, height: 16 }),
   );
-  tray.setToolTip("Weave");
+  tray.setToolTip("映箱");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: "打开 Weave", click: createOrShow },
+      { label: "打开映箱", click: createOrShow },
       {
         label: "退出",
         click: () => {
@@ -368,7 +368,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 680,
     backgroundColor: "#f6f7fb",
-    title: "Weave",
+    title: "映箱",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -477,7 +477,7 @@ async function call(method, payload = {}) {
       let input = payload.path || payload.root;
       if (!input) {
         const selected = await dialog.showOpenDialog(mainWindow, {
-          title: "打开 Weave 项目文件夹",
+          title: "打开映箱项目文件夹",
           properties: ["openDirectory"],
         });
         if (selected.canceled) return { canceled: true };
@@ -489,7 +489,7 @@ async function call(method, payload = {}) {
     case "listProjectBackups":
       return repo.safety.list(payload.projectId);
     case "createProjectBackup":
-      result = repo.safety.create(payload.projectId);
+      result = repo.safety.create(payload.projectId, payload.includeTrash !== false);
       break;
     case "restoreProjectBackup": {
       const selected = await dialog.showOpenDialog(mainWindow, {
@@ -784,6 +784,37 @@ else {
           );
         }
       });
+      ipcMain.on("weave:drag-asset", (event, payload) => {
+        try {
+          trusted(event);
+          if (
+            !payload ||
+            typeof payload.projectId !== "string" ||
+            typeof payload.assetId !== "string"
+          )
+            throw new Error("Invalid asset drag request");
+          const { file } = repo.resolveAsset({
+            projectId: payload.projectId,
+            id: payload.assetId,
+          });
+          const pixels = Buffer.alloc(32 * 32 * 4);
+          for (let i = 0; i < pixels.length; i += 4) {
+            pixels[i] = 104;
+            pixels[i + 1] = 87;
+            pixels[i + 2] = 225;
+            pixels[i + 3] = 255;
+          }
+          event.sender.startDrag({
+            file,
+            icon: nativeImage.createFromBuffer(pixels, {
+              width: 32,
+              height: 32,
+            }),
+          });
+        } catch (error) {
+          console.warn("Native asset drag failed:", error.message);
+        }
+      });
       ipcMain.handle("inbox:choose-folder", async (event) => {
         trusted(event);
         const result = await enqueue("chooseInbox", {});
@@ -834,7 +865,7 @@ else {
       console.error(e);
       if (smokeReport) finishSmoke({ ok: false, error: e.stack });
       else {
-        dialog.showErrorBox("Weave 启动失败", e.message);
+        dialog.showErrorBox("映箱启动失败", e.message);
         app.quit();
       }
     });

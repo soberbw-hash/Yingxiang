@@ -81,6 +81,7 @@ const TYPES = {
 };
 const categories = [
   "uncategorized",
+  "product",
   "character",
   "scene",
   "prop",
@@ -350,6 +351,7 @@ class ProjectRepository {
     for (const w of writes) {
       if (
         w.file !== "metadata/editing.json" &&
+        w.file !== "metadata/editing-history.json" &&
         w.file !== "metadata/canvas.json" &&
         !/^(metadata\/(assets|shots)|activity|trash)\/[a-f0-9-]{36}\.json$/.test(
           w.file,
@@ -529,6 +531,8 @@ class ProjectRepository {
       editing: fs.existsSync(inside(root, "metadata/editing.json"))
         ? read(inside(root, "metadata/editing.json"))
         : undefined,
+      editingHistory: fs.existsSync(inside(root, "metadata/editing-history.json"))
+        ? read(inside(root, "metadata/editing-history.json")) : undefined,
       canvas: fs.existsSync(inside(root, "metadata/canvas.json"))
         ? read(inside(root, "metadata/canvas.json")) : undefined,
       assets: list(root, "metadata/assets").map((a) => ({
@@ -991,6 +995,7 @@ class ProjectRepository {
   }
   async editReference({ projectId, action, revision }) {
     const { applyEditing } = await import("../shared/editing.mjs");
+    const { rememberEditingVersion } = await import("../shared/editing-history.mjs");
     return this.mutate(projectId, (root) => {
       const snapshot = this.snapshotUnlocked(root);
       const editing = applyEditing(
@@ -1002,7 +1007,8 @@ class ProjectRepository {
       );
       this.commit(
         root,
-        [{ file: "metadata/editing.json", value: editing }],
+        [{ file: "metadata/editing.json", value: editing },
+          { file: "metadata/editing-history.json", value: rememberEditingVersion(snapshot.editingHistory, snapshot.editing, action) }],
         "editing.updated",
       );
     });

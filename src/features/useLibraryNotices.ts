@@ -46,7 +46,7 @@ export function useLibraryNotices(
           if (current.current !== store) return "disabled";
           return sendBrowserNotification({
             enabled: latest.current.enabled,
-            title: "Weave · 通知",
+            title: "映箱 · 通知",
             body: libraryUpdateSummary(pending),
             tag: `weave-library:${libraryId}`,
             onClick: () => latest.current.onOpen(libraryId!),

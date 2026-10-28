@@ -21,7 +21,7 @@ function release(version = "0.3.0", digest = `sha256:${sha256}`) {
       name: `Weave-Windows-v${version}.zip`,
       size: bytes.length,
       digest,
-      browser_download_url: `https://github.com/soberbw-hash/Weave/releases/download/v${version}/Weave-Windows-v${version}.zip`,
+      browser_download_url: `https://github.com/soberbw-hash/Yingxiang/releases/download/v${version}/Weave-Windows-v${version}.zip`,
     }],
   };
 }
@@ -37,7 +37,7 @@ test("checks a newer public GitHub release and validates the expected asset", as
   const update = await checkLatestRelease({
     currentVersion: "0.2.0",
     fetchImpl: async (url) => {
-      assert.equal(url, "https://api.github.com/repos/soberbw-hash/Weave/releases/latest");
+      assert.equal(url, "https://api.github.com/repos/soberbw-hash/Yingxiang/releases/latest");
       return response(release());
     },
   });

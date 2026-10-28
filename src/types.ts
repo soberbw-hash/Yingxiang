@@ -1,5 +1,6 @@
 export type AssetCategory =
   | "uncategorized"
+  | "product"
   | "character"
   | "scene"
   | "prop"
@@ -94,8 +95,10 @@ export type ProjectSnapshot = {
   shots: Shot[];
   activities: Activity[];
   editing?: EditDocument;
+  editingHistory?: EditingVersion[];
   canvas?: CanvasDocument;
 };
+export type EditingVersion = { id: string; createdAt: string; label: string; actionType: string; paragraphId?: string; document: EditDocument };
 export type CanvasNode = {
   id: string; kind: "asset" | "note"; assetId?: string; text?: string;
   x: number; y: number; width: number; height: number; frameId?: string; mediaRatio?: number;
@@ -161,6 +164,7 @@ export type ExportInclude = {
 };
 export type DesktopBridge = {
   invoke: (method: string, payload?: Record<string, unknown>) => Promise<any>;
+  startAssetDrag: (projectId: string, assetId: string) => void;
   onChanged: (callback: (event: any) => void) => () => void;
   droppedFilePath: (file: File) => string;
   checkForUpdates: () => Promise<any>;
@@ -171,9 +175,9 @@ export type DesktopBridge = {
 export const categories: { id: AssetCategory | "all"; label: string }[] = [
   { id: "all", label: "全部" },
   { id: "uncategorized", label: "未分类" },
+  { id: "product", label: "产品" },
   { id: "character", label: "角色" },
   { id: "scene", label: "场景" },
-  { id: "prop", label: "道具" },
   { id: "storyboard", label: "分镜" },
   { id: "script", label: "脚本" },
   { id: "video", label: "视频" },
@@ -207,7 +211,7 @@ export function matchesCategory(asset: Asset, category: AssetCategory | "all") {
         ? asset.kind === "document" || asset.category === category
         : category === "audio"
           ? asset.kind === "audio" || asset.category === category
-          : asset.category === category)
+          : category === "uncategorized" ? asset.category === "uncategorized" || asset.category === "prop" : asset.category === category)
   );
 }
 /** Explicit shot references are authoritative; shotId supports older projects. */

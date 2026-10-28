@@ -13,7 +13,6 @@ import {
 } from "../services/directoryFiles";
 import {
   initializeLibrary,
-  librarySnapshot,
   scanExternalLibrary,
   syncLibraryDirectory,
   sharedAssetBlob,
@@ -156,12 +155,15 @@ export function useSharedLibrary(
       let handle = await choice;
       await directoryPermission(handle, mode !== "readonly", true);
       await ensureIndependentFolder(handle, "library");
+      const prior = current.current;
+      if (prior && !(prior.handle.isSameEntry && await prior.handle.isSameEntry(handle)) && !window.confirm(
+        `切换公共库至「${handle.name}」？原公共库和个人项目均保留，不会自动合并。`,
+      )) return;
       if (mode === "create")
         handle = await handle.getDirectoryHandle(
           `Weave公共资产库__${crypto.randomUUID().slice(0, 8)}`,
           { create: true },
         );
-      const prior = current.current;
       const sameReadOnly =
         mode === "readonly" &&
         prior?.mode === "readonly" &&
@@ -174,7 +176,7 @@ export function useSharedLibrary(
             : crypto.randomUUID()
           : mode === "create"
             ? await initializeLibrary(handle)
-            : (await librarySnapshot(handle)).id;
+            : await initializeLibrary(handle);
       const next: FolderConnection = {
         key: "public-library",
         kind: "library",
@@ -183,14 +185,6 @@ export function useSharedLibrary(
         id,
         mode: mode === "readonly" ? "readonly" : "managed",
       };
-      if (
-        current.current &&
-        current.current.id !== next.id &&
-        !window.confirm(
-          `切换公共库至「${next.name}」？原公共库和个人项目均保留，不会自动合并。`,
-        )
-      )
-        return;
       await rememberFolder(next);
       setConnection(next);
     } catch (reason) {

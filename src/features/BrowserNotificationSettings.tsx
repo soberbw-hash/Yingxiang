@@ -18,7 +18,6 @@ export function BrowserNotificationSettings({
   enabled,
   onChange,
   disabled = false,
-  immediate = false,
 }: {
   enabled: boolean;
   onChange: (enabled: boolean) => void | Promise<void>;
@@ -52,7 +51,7 @@ export function BrowserNotificationSettings({
       </p>
       {status === "default" && (
         <p className="feature-note">
-          系统通知尚未授权，所以测试按钮暂不可用。点「开启浏览器通知」后，请在浏览器弹窗中选择允许；软件内「通知」列表不受此权限影响。
+          授权后可测试系统通知；软件内「通知」列表不受此权限影响。
         </p>
       )}
       <div className="feature-actions">
@@ -67,11 +66,7 @@ export function BrowserNotificationSettings({
                 setStatus(next);
                 if (next === "granted") {
                   await onChange(true);
-                  setFeedback(
-                    immediate
-                      ? "系统提醒设置已保存。"
-                      : "已授权，请保存设置以启用提醒。",
-                  );
+                  setFeedback("浏览器已允许通知，可发送测试通知。");
                 }
               } catch {
                 setStatus(browserNotificationStatus());
@@ -93,7 +88,7 @@ export function BrowserNotificationSettings({
             const result = sendBrowserNotification({
               enabled,
               test: true,
-              title: "Weave · 测试通知",
+              title: "映箱 · 测试通知",
               body: "通知通道测试，不包含项目名、文件名或素材内容。",
               tag: "weave-test",
             });
@@ -108,29 +103,6 @@ export function BrowserNotificationSettings({
           发送测试通知
         </button>
       </div>
-      <label className="feature-check">
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={status !== "granted" && !enabled}
-          onChange={async (event) => {
-            const value = event.target.checked;
-            setRequesting(true);
-            setFeedback("");
-            try {
-              await onChange(value);
-              setFeedback(
-                immediate ? "系统提醒设置已保存。" : "请保存设置以应用更改。",
-              );
-            } catch {
-              setFeedback("设置保存失败，请重试；未显示为保存成功。");
-            } finally {
-              setRequesting(false);
-            }
-          }}
-        />
-        切到其他窗口时，提醒任务结果与公共库新增
-      </label>
       {status === "denied" && (
         <p className="feature-note">
           系统通知被浏览器或公司策略阻止，网页不能绕过。软件内「通知」列表仍可使用；请勿更改公司安全策略。
@@ -142,10 +114,6 @@ export function BrowserNotificationSettings({
           能否授权通知取决于浏览器，不保证可用。
         </p>
       )}
-      <p className="feature-note">
-        公共库通知需连接同一个公共库；新增素材通常在 20 秒内检查，页面关闭后不持续接收。系统提醒仅在切到其他窗口时发送，不包含项目名或文件名。
-        {immediate ? "此处更改即时保存。" : "修改后点「保存设置」生效。"}
-      </p>
       {feedback && (
         <p className="feature-note" role="status">
           {feedback}

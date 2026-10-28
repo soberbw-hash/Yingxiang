@@ -18,6 +18,9 @@ export const assetCategoryThemes = {
     background: "#F5F0FC",
     border: "#C9B5E8",
   },
+  product: {
+    label: "产品", color: "蓝紫", ink: "#535DAB", background: "#F0F2FC", border: "#B9C1E5",
+  },
   scene: {
     label: "场景",
     color: "绿",
@@ -79,6 +82,7 @@ export const assetCategoryThemes = {
 >;
 
 export function assetCategoryTheme(category: string) {
+  if (category === "prop") return assetCategoryThemes.uncategorized;
   return Object.prototype.hasOwnProperty.call(assetCategoryThemes, category)
     ? assetCategoryThemes[category as AssetCategory]
     : assetCategoryThemes.uncategorized;

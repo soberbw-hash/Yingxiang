@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import type { DragEvent, PointerEvent as ReactPointerEvent, ReactNode, FormEvent, KeyboardEvent } from "react";
 import { ArrowCounterClockwise, ArrowClockwise, Plus, FrameCorners, Hand, Cursor,
   NotePencil, CaretDown, CaretRight, Lock, LockOpen, X, SquaresFour, CornersOut,
-  Minus, Check, ArrowSquareOut, Crosshair, User, Mountains, Cube, PlayCircle,
-  MusicNotes } from "@phosphor-icons/react";
+  Minus, Check, ArrowSquareOut, Crosshair } from "@phosphor-icons/react";
 import type { Asset, AssetCategory, CanvasDocument, CanvasFrame, CanvasNode, EditParagraph } from "../../types";
+import { matchesCategory } from "../../types";
 import { assetNode, arrangeNodes, canvasAsset, canvasAssetIds, moveCanvasItems } from "../../../shared/canvas.mjs";
 import { groupAssets, stackMembers, type StackAction } from "../../../shared/asset-stacks.mjs";
 import { writeAssetDrag } from "../../services/assetOutbound";
-import { droppedMediaUrl } from "../../services/assetDrop";
-import { assetCategoryStyle, assetCategoryTheme } from "../../services/assetCategoryTheme";
 import { useCanvasDocument } from "./useCanvasDocument";
 import { CanvasMedia } from "./CanvasMedia";
 import { AssetStackHistory } from "../AssetStackHistory";
@@ -17,8 +15,9 @@ import { FeatureDialog } from "../shared";
 import "./canvas.css";
 
 type Props = {
+  active?: boolean;
   assets: Asset[]; stored?: CanvasDocument; projectId: string; search: string;
-  toolbar: ReactNode; paragraphs: EditParagraph[];
+  toolbar: ReactNode; filter: AssetCategory | "all"; paragraphs: EditParagraph[];
   onSave: (doc: CanvasDocument, revision: number) => Promise<CanvasDocument>;
   onPreview: (asset: Asset) => void; onCopy: (asset: Asset) => void;
   onUse: (assets: Asset[]) => void; onStackAction: (action: StackAction) => Promise<unknown>;
@@ -29,14 +28,6 @@ type Props = {
   onImportLink: (url: string, category: AssetCategory) => void;
 };
 
-const quickCategories = [
-  { id: "character", Icon: User },
-  { id: "scene", Icon: Mountains },
-  { id: "prop", Icon: Cube },
-  { id: "video", Icon: PlayCircle },
-  { id: "audio", Icon: MusicNotes },
-  { id: "other", Icon: SquaresFour },
-] as const;
 type Gesture = { pointerId: number; mode: "pan" | "move" | "resize" | "box";
   startX: number; startY: number; before: CanvasDocument;
   nodes: string[]; frames: string[]; itemId?: string; moved: boolean };
@@ -45,7 +36,7 @@ const targetIsControl = (target: EventTarget) => (target as Element).closest("bu
 
 export function CanvasWorkspace(props: Props) {
   const { assets, stored, search } = props;
-  const state = useCanvasDocument(stored, assets, props.onSave);
+  const state = useCanvasDocument(stored, assets, props.onSave, props.active !== false);
   const { doc } = state;
   const [draft, setDraft] = useState<CanvasDocument>();
   const board = draft || doc;
@@ -63,7 +54,6 @@ export function CanvasWorkspace(props: Props) {
   const [dimensions, setDimensions] = useState({ width: 1000, height: 700 });
   const dragOver = useRef(0);
   const [dropFrame, setDropFrame] = useState("");
-  const [dropCategory, setDropCategory] = useState<AssetCategory | "">("");
   const [importing, setImporting] = useState(false);
   const disabled = state.saving || state.dirty || importing;
   const currentFrame = board.frames.find(f => f.id === selectedFrame);
@@ -72,9 +62,10 @@ export function CanvasWorkspace(props: Props) {
     const asset = canvasAsset(n, assets); return asset ? [asset.stackId || asset.id] : [];
   }));
   const unplaced = groupAssets(visibleAssets).map(g => g.cover).filter(a => !placed.has(a.stackId || a.id));
-  const trayAssets = unplaced.filter(a => `${a.name} ${a.tags.join(" ")}`.toLowerCase().includes(traySearch.toLowerCase()));
+  const trayAssets = unplaced.filter(a => matchesCategory(a, props.filter) && `${a.name} ${a.tags.join(" ")}`.toLowerCase().includes(traySearch.toLowerCase()));
   const selectedIds = canvasAssetIds(board, selectedFrame ? board.nodes.filter(n => n.frameId === selectedFrame).map(n => n.id) : selected, assets);
-  const selectedAssetIds = canvasAssetIds(board, selected, assets);
+  useEffect(() => { setSelected([]); setSelectedFrame(""); }, [props.filter]);
+  const nodeMatchesFilter = (node: CanvasNode) => node.kind === "note" || props.filter === "all" || (() => { const asset = canvasAsset(node, assets); return !!asset && matchesCategory(asset, props.filter); })();
   const matches = board.nodes.filter(n => n.kind === "note" ? n.text?.includes(search) : (() => {
     const a = canvasAsset(n, assets); return a && `${a.name} ${a.tags.join(" ")} ${a.prompt}`.toLowerCase().includes(search.toLowerCase());
   })());
@@ -113,28 +104,6 @@ export function CanvasWorkspace(props: Props) {
     changed.mediaRatio = ratio;
     if (changed.frameId) growFrame(next, changed.frameId);
     void commit(next, assets, false);
-  }
-  function classify(ids: string[], category: AssetCategory) {
-    const valid = ids.filter(id => assets.some(asset => asset.id === id && !asset.trashedAt));
-    if (valid.length) props.onUpdate(valid, { category });
-    else setOperationError("找不到这些素材；请先将素材加入当前项目。");
-  }
-  function dropOnCategory(event: DragEvent<HTMLButtonElement>, category: AssetCategory) {
-    event.preventDefault(); event.stopPropagation(); setDropCategory(""); setOperationError("");
-    const raw = event.dataTransfer.getData("application/weave-assets");
-    const files = Array.from(event.dataTransfer.files);
-    const url = droppedMediaUrl(event.dataTransfer);
-    if (raw) {
-      try {
-        const ids: unknown = JSON.parse(raw);
-        if (!Array.isArray(ids) || !ids.every((id): id is string => typeof id === "string"))
-          throw new Error("无法识别拖入的素材。");
-        classify(ids, category);
-      } catch (reason) {
-        setOperationError((reason as Error).message || "无法识别拖入的素材。");
-      }
-    } else if (files.length) props.onImportCategory(files, category);
-    else if (url) props.onImportLink(url, category);
   }
   function world(clientX: number, clientY: number, source = board) {
     const rect = viewport.current!.getBoundingClientRect();
@@ -238,7 +207,7 @@ export function CanvasWorkspace(props: Props) {
       const rect = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
       setBox(rect);
       setSelected([...new Set([...g.nodes, ...board.nodes.filter(n =>
-        !board.frames.find(f => f.id === n.frameId)?.collapsed && n.x < rect.x + rect.width && n.x + n.width > rect.x && n.y < rect.y + rect.height && n.y + n.height > rect.y).map(n => n.id)])]);
+        nodeMatchesFilter(n) && !board.frames.find(f => f.id === n.frameId)?.collapsed && n.x < rect.x + rect.width && n.x + n.width > rect.x && n.y < rect.y + rect.height && n.y + n.height > rect.y).map(n => n.id)])]);
     }
   }
   function end(event: ReactPointerEvent, canceled = false) {
@@ -304,7 +273,7 @@ export function CanvasWorkspace(props: Props) {
   function tidy() {
     const next = structuredClone(board);
     const frame = next.frames.find(f => f.id === selectedFrame);
-    const categoryOrder = ["character", "scene", "prop", "storyboard", "script", "video", "audio", "other", "uncategorized"];
+    const categoryOrder = ["product", "character", "scene", "storyboard", "script", "video", "audio", "other", "uncategorized"];
     const nodes = (frame
       ? next.nodes.filter(n => n.kind === "asset" && n.frameId === frame.id)
       : selected.length
@@ -313,7 +282,7 @@ export function CanvasWorkspace(props: Props) {
       .sort((a, b) => {
         const aa = a.assetId ? assets.find(item => item.id === a.assetId) : undefined;
         const bb = b.assetId ? assets.find(item => item.id === b.assetId) : undefined;
-        const category = (aa ? categoryOrder.indexOf(aa.category) : 99) - (bb ? categoryOrder.indexOf(bb.category) : 99);
+        const category = (aa ? categoryOrder.indexOf(aa.category === "prop" ? "uncategorized" : aa.category) : 99) - (bb ? categoryOrder.indexOf(bb.category === "prop" ? "uncategorized" : bb.category) : 99);
         if (category) return category;
         const created = (aa?.createdAt || "").localeCompare(bb?.createdAt || "");
         return created || (aa?.name || "").localeCompare(bb?.name || "", "zh");
@@ -375,7 +344,7 @@ export function CanvasWorkspace(props: Props) {
   function key(event: KeyboardEvent) {
     if (targetIsControl(event.target) || disabled) return;
     if (event.key === "Escape") { gesture.current = undefined; setDraft(undefined); setBox(undefined); setSelected([]); setSelectedFrame(""); }
-    else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); setSelected(board.nodes.map(n => n.id)); setSelectedFrame(""); }
+    else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); setSelected(board.nodes.filter(nodeMatchesFilter).filter(n => !board.frames.find(f => f.id === n.frameId)?.collapsed).map(n => n.id)); setSelectedFrame(""); }
     else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); void (event.shiftKey ? state.redo() : state.undo()); }
     else if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); remove(); }
     else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
@@ -390,37 +359,21 @@ export function CanvasWorkspace(props: Props) {
     : selected.length
       ? board.nodes.filter(n => n.kind === "asset" && selected.includes(n.id) && !board.frames.find(f => f.id === n.frameId)?.locked).length
       : board.nodes.filter(n => n.kind === "asset" && !n.frameId).length;
-  return <section className="canvas-workspace" data-editing-dirty={state.dirty || !!editing || state.saving || !!draft ? "true" : undefined}>
+  return <section className="canvas-workspace" data-editing-dirty={state.dirty || !!editing || state.saving || !!draft ? "true" : undefined} data-save-state={state.error ? "error" : state.saving ? "saving" : state.dirty ? "pending" : "idle"}>
     <div className="canvas-toolbar">
       {props.toolbar}
-      <span className="canvas-save-state" role="status">{state.saving ? "保存中…" : state.dirty ? "未保存" : doc.revision ? "已保存" : ""}</span>
-      <div className="canvas-category-drops" role="group" aria-label="拖到分类快速整理">
-        {quickCategories.map(({ id, Icon }) => {
-          const theme = assetCategoryTheme(id);
-          return <button key={id} type="button" style={assetCategoryStyle(id)}
-            className={dropCategory === id ? "is-drag-over" : undefined}
-            title={`${theme.label}：将选中素材归类，或拖入素材快速归类`}
-            aria-label={`${theme.label}分类；点击归类已选素材，拖入也可分类`}
-            onClick={() => { if (selectedAssetIds.length) classify(selectedAssetIds, id); }}
-            onDragEnter={event => { if (!disabled) { event.preventDefault(); setDropCategory(id); } }}
-            onDragOver={event => { if (!disabled) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDropCategory(id); } }}
-            onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropCategory(""); }}
-            onDrop={event => { if (!disabled) dropOnCategory(event, id); }}>
-            <Icon size={14} weight="regular" aria-hidden="true" />{theme.label}
-          </button>;
-        })}
-      </div>
       <div className="canvas-toolbar-actions">
+        {(state.saving || state.dirty) && <span className="canvas-save-state" role="status">{state.saving ? "保存中…" : "未保存"}</span>}
         <button disabled={disabled || !state.canUndo} onClick={() => void state.undo()} title="撤销 · Ctrl Z" aria-label="撤销"><ArrowCounterClockwise size={17} /></button>
         <button disabled={disabled || !state.canRedo} onClick={() => void state.redo()} title="重做 · Ctrl Shift Z" aria-label="重做"><ArrowClockwise size={17} /></button>
-        <button disabled={disabled || tidyCount < 2 || !!currentFrame?.locked} onClick={tidy} title={currentFrame ? "整理当前区域内的素材" : selected.length ? "整理选中的素材" : "整理所有未归组素材；按分类分组，同类内按加入时间从早到晚排列。可用 Ctrl+Z 撤销。"}><SquaresFour size={16} />按类型整理</button>
+        <button disabled={disabled || props.filter !== "all" || tidyCount < 2 || !!currentFrame?.locked} onClick={tidy} title={props.filter !== "all" ? "切换到全部素材后整理，避免移动隐藏的素材" : currentFrame ? "整理当前区域内的素材" : selected.length ? "整理选中的素材" : "整理所有未归组素材；按分类分组，同类内按加入时间从早到晚排列。可用 Ctrl+Z 撤销。"}><SquaresFour size={16} />按类型整理</button>
         <button disabled={disabled} title={selected.length ? `把选中的 ${selected.length} 项素材组成一个区域` : "在当前视口新建空区域；也可先框选素材再创建区域"} onClick={() => setEditing({ kind: "frame", title: "", text: "" })}><FrameCorners size={17} />{selected.length ? `组成区域 · ${selected.length}` : "新建区域"}</button>
         <button disabled={disabled} onClick={() => setEditing({ kind: "note", title: "", text: "" })} title="添加便签" aria-label="添加便签"><NotePencil size={17} /></button>
         <button aria-pressed={tray} onClick={() => setTray(!tray)}>未摆放 <small>{unplaced.length}</small></button>
       </div>
     </div>
     {(state.error || operationError) && <div className="canvas-error" role="alert"><span>{state.error || operationError}</span>{state.dirty && <button onClick={() => state.reload()}>载入已保存布局</button>}<button onClick={() => setOperationError("")}>关闭提示</button></div>}
-    <div className="canvas-body">
+    <div className={`canvas-body ${props.filter !== "all" ? "canvas-filtered" : ""}`}>
       <div ref={viewport} className={`canvas-viewport tool-${tool}`} role="region" aria-label="项目素材画布" tabIndex={0}
         onKeyDown={key} onPointerDown={e => { if (e.target === e.currentTarget || (e.target as Element).classList.contains("canvas-world")) start(e, "box"); }}
         onPointerMove={move} onPointerUp={e => end(e)} onPointerCancel={e => end(e, true)}
@@ -449,7 +402,7 @@ export function CanvasWorkspace(props: Props) {
             {!frame.collapsed && frame.note && <p className="canvas-frame-note">{frame.note}</p>}
             {!frame.collapsed && selectedFrame === frame.id && !frame.locked && <button className="canvas-resize" aria-label={`调整区域大小 ${frame.title}`} onPointerDown={e => start(e, "resize", frame.id, true)} />}
           </section>)}
-          {board.nodes.filter(n => !board.frames.find(f => f.id === n.frameId)?.collapsed && onScreen(n)).map(node => {
+          {board.nodes.filter(n => !board.frames.find(f => f.id === n.frameId)?.collapsed && onScreen(n) && nodeMatchesFilter(n)).map(node => {
             const asset = canvasAsset(node, assets), locked = board.frames.find(f => f.id === node.frameId)?.locked;
             return <div key={node.id} className={`canvas-node ${node.kind === "note" ? "canvas-note" : ""} ${selected.includes(node.id) ? "is-selected" : ""} ${search && matches.some(n => n.id === node.id) ? "search-match" : ""}`}
               data-canvas-node={node.id} style={{ left: node.x, top: node.y, width: node.width, height: node.height }}

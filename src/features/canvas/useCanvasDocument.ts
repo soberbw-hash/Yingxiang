@@ -6,6 +6,7 @@ export function useCanvasDocument(
   stored: CanvasDocument | undefined,
   assets: Asset[],
   onSave: (doc: CanvasDocument, revision: number) => Promise<CanvasDocument>,
+  isVisible = true,
 ) {
   const [doc, setDoc] = useState(() => stored ? validateCanvas(stored, assets) : emptyCanvas());
   const current = useRef(doc), saved = useRef(stored), active = useRef(true);
@@ -28,11 +29,11 @@ export function useCanvasDocument(
     past.current = []; future.current = [];
   }, [stored, dirty, assets]);
   useEffect(() => {
-    if (!dirty && !saving) return;
+    if (!isVisible || (!dirty && !saving)) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, saving]);
+  }, [dirty, saving, isVisible]);
   async function persist(next: CanvasDocument, remember = true, validationAssets = latestAssets.current) {
     if (savingRef.current) return false;
     const previous = current.current;

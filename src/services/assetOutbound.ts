@@ -2,6 +2,19 @@ import type { Asset } from "../types";
 
 type DragAsset = Pick<Asset, "id" | "name" | "url" | "mime" | "size" | "hash">;
 
+/** Use OS-native file paths in the desktop build; browsers cannot export file paths. */
+export function startNativeAssetDrag(
+  event: Pick<globalThis.DragEvent, "preventDefault">,
+  projectId: string | undefined,
+  assetId: string,
+) {
+  const bridge = window.weaveDesktop;
+  if (!bridge || !projectId) return false;
+  event.preventDefault();
+  bridge.startAssetDrag(projectId, assetId);
+  return true;
+}
+
 export function outboundFileName(name: string) {
   return (
     name
@@ -24,9 +37,19 @@ async function originalFile(asset: DragAsset): Promise<File> {
 }
 
 export const MAX_AUDIO_DRAG_BYTES = 32 * 1024 * 1024;
+export const MAX_IMAGE_DRAG_BYTES = 48 * 1024 * 1024;
+// Keep outbound video preparation bounded: drag data must be ready synchronously
+// in dragstart, so the original is fetched while the user hovers the card.
+export const MAX_VIDEO_DRAG_BYTES = 128 * 1024 * 1024;
 const audioFiles = new Map<string, File>();
 const pendingAudio = new Map<string, Promise<File>>();
 let reservedAudioBytes = 0;
+const imageFiles = new Map<string, File>();
+const pendingImages = new Map<string, Promise<File>>();
+let reservedImageBytes = 0;
+const videoFiles = new Map<string, File>();
+const pendingVideos = new Map<string, Promise<File>>();
+let reservedVideoBytes = 0;
 const audioKey = (asset: DragAsset) =>
   JSON.stringify([
     asset.id,
@@ -95,6 +118,114 @@ export function prepareAudioDragFile(asset: Asset): Promise<File> {
   return promise;
 }
 
+/** Pre-read the untouched original so web upload targets receive a real File item. */
+export function prepareImageDragFile(asset: Asset): Promise<File> {
+  if (
+    asset.kind !== "image" ||
+    asset.trashedAt ||
+    !asset.url ||
+    !Number.isSafeInteger(asset.size) ||
+    asset.size <= 0 ||
+    asset.size > MAX_IMAGE_DRAG_BYTES
+  )
+    return Promise.reject(new Error("请下载原图片后上传"));
+  const key = audioKey(asset), saved = imageFiles.get(key);
+  if (saved) {
+    imageFiles.delete(key);
+    imageFiles.set(key, saved);
+    return Promise.resolve(saved);
+  }
+  const pending = pendingImages.get(key);
+  if (pending) return pending;
+  if (pendingImages.size >= 2)
+    return Promise.reject(new Error("正在准备其他图片，请稍后重试"));
+  const budget = 96 * 1024 * 1024;
+  const bytesUsed = () => [...imageFiles.values()].reduce((sum, file) => sum + file.size, 0);
+  while (imageFiles.size && (imageFiles.size >= 8 || bytesUsed() + reservedImageBytes + asset.size > budget))
+    imageFiles.delete(imageFiles.keys().next().value!);
+  reservedImageBytes += asset.size;
+  const promise = originalFile(asset)
+    .then(async (file) => {
+      if (/^[a-f0-9]{64}$/i.test(asset.hash)) {
+        const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+        const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        if (hash !== asset.hash.toLowerCase()) throw new Error("原图片校验失败，请保留工程并下载检查");
+      }
+      while (imageFiles.size >= 8 || bytesUsed() + file.size > budget)
+        imageFiles.delete(imageFiles.keys().next().value!);
+      imageFiles.set(key, file);
+      return file;
+    })
+    .finally(() => {
+      reservedImageBytes -= asset.size;
+      pendingImages.delete(key);
+    });
+  pendingImages.set(key, promise);
+  return promise;
+}
+
+/** Prepare the original video before the user starts dragging it out. */
+export function prepareVideoDragFile(asset: Asset): Promise<File> {
+  if (
+    asset.kind !== "video" ||
+    asset.trashedAt ||
+    !asset.url ||
+    !Number.isSafeInteger(asset.size) ||
+    asset.size <= 0 ||
+    asset.size > MAX_VIDEO_DRAG_BYTES
+  )
+    return Promise.reject(new Error("视频较大，请下载原文件后拖入剪辑软件"));
+  const key = audioKey(asset),
+    saved = videoFiles.get(key);
+  if (saved) {
+    videoFiles.delete(key);
+    videoFiles.set(key, saved);
+    return Promise.resolve(saved);
+  }
+  const pending = pendingVideos.get(key);
+  if (pending) return pending;
+  // Avoid competing large reads when the pointer sweeps across a dense grid.
+  if (pendingVideos.size >= 1)
+    return Promise.reject(new Error("正在准备其他视频，请稍后重试"));
+  const budget = 192 * 1024 * 1024;
+  const bytesUsed = () =>
+    [...videoFiles.values()].reduce((sum, file) => sum + file.size, 0);
+  while (
+    videoFiles.size &&
+    (videoFiles.size >= 3 ||
+      bytesUsed() + reservedVideoBytes + asset.size > budget)
+  )
+    videoFiles.delete(videoFiles.keys().next().value!);
+  reservedVideoBytes += asset.size;
+  const promise = originalFile(asset)
+    .then(async (file) => {
+      if (/^[a-f0-9]{64}$/i.test(asset.hash)) {
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          await file.arrayBuffer(),
+        );
+        const hash = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+        if (hash !== asset.hash.toLowerCase())
+          throw new Error("原视频校验失败，请保留工程并下载检查");
+      }
+      while (
+        videoFiles.size >= 3 ||
+        bytesUsed() + file.size > budget
+      )
+        videoFiles.delete(videoFiles.keys().next().value!);
+      videoFiles.set(key, file);
+      return file;
+    })
+    .finally(() => {
+      reservedVideoBytes -= asset.size;
+      pendingVideos.delete(key);
+    });
+  pendingVideos.set(key, promise);
+  return promise;
+}
+
 type MediaDragAsset = Pick<Asset, "kind" | "url" | "name" | "mime"> &
   Partial<Pick<Asset, "id" | "hash" | "size" | "trashedAt">>;
 function preparedAudio(asset: MediaDragAsset) {
@@ -104,6 +235,25 @@ function preparedAudio(asset: MediaDragAsset) {
     asset.hash &&
     asset.size
     ? audioFiles.get(audioKey(asset as DragAsset))
+    : undefined;
+}
+function preparedVideo(asset: MediaDragAsset) {
+  return asset.kind === "video" &&
+    !asset.trashedAt &&
+    asset.id &&
+    asset.hash &&
+    asset.size
+    ? videoFiles.get(audioKey(asset as DragAsset))
+    : undefined;
+}
+
+function preparedImage(asset: MediaDragAsset) {
+  return asset.kind === "image" &&
+    !asset.trashedAt &&
+    asset.id &&
+    asset.hash &&
+    asset.size
+    ? imageFiles.get(audioKey(asset as DragAsset))
     : undefined;
 }
 
@@ -116,6 +266,20 @@ export function writeAssetDrag(transfer: DataTransfer, assets: DragAsset[]) {
     JSON.stringify(assets.map((asset) => asset.id)),
   );
   transfer.effectAllowed = "copyMove";
+}
+
+/** Append the original image as a File while preserving the browser's native img payload. */
+export function writeImageFileDrag(transfer: DataTransfer, asset: MediaDragAsset) {
+  if (asset.kind !== "image" || asset.trashedAt) return false;
+  const file = preparedImage(asset);
+  if (!file || !transfer.items?.add) return false;
+  try {
+    if (!transfer.items.add(file)) return false;
+    transfer.effectAllowed = "copyMove";
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function downloadOriginal(asset: DragAsset) {
@@ -139,7 +303,7 @@ export function writeVideoFileDrag(
   return asset.kind === "video" && writeMediaFileDrag(transfer, asset);
 }
 
-/** A prepared audio File first; DownloadURL only falls back for unprepared media.
+/** A prepared audio/video File first; DownloadURL only falls back if unavailable.
  * A constructed File is not an OS file bridge; cross-renderer target acceptance must be tested. */
 export function writeMediaFileDrag(
   transfer: DataTransfer,
@@ -152,10 +316,10 @@ export function writeMediaFileDrag(
     !/^(blob:|https?:)/i.test(asset.url)
   )
     return false;
-  const audio = preparedAudio(asset);
-  if (audio) {
+  const file = preparedAudio(asset) || preparedVideo(asset);
+  if (file) {
     try {
-      if (transfer.items?.add(audio)) {
+      if (transfer.items?.add(file)) {
         transfer.effectAllowed = "copyMove";
         return true;
       }

@@ -3,8 +3,9 @@ import type { ProjectSnapshot, Asset, Shot } from "../types";
 import { validateEditing } from "../../shared/editing.mjs";
 import { validateAssetStacks } from "../../shared/asset-stacks.mjs";
 import { validateCanvas } from "../../shared/canvas.mjs";
+import { validateEditingHistory } from "../../shared/editing-history.mjs";
 
-export const APP_VERSION = "0.2.0";
+export const APP_VERSION = "0.3.0";
 export const PROJECT_SCHEMA = 1;
 export type RecoveryRecord = ProjectSnapshot & {
   publicInbox?: boolean;
@@ -12,6 +13,7 @@ export type RecoveryRecord = ProjectSnapshot & {
   trashShotReferences?: Record<string, string[]>;
 };
 export type RecoveryMedia = { id: string; hash: string; blob: Blob };
+export type PreparedProjectArchive = { record: RecoveryRecord; media: RecoveryMedia[]; archiveKind: "backup" | "delivery" };
 export type BackupInfo = {
   id: string;
   projectId: string;
@@ -51,16 +53,25 @@ export function validateRecord(value: unknown): RecoveryRecord {
     shotIds = new Set<string>(),
     paths = new Set<string>();
   for (const asset of record.assets as Asset[]) {
+    const relativePath = typeof asset.relativePath === "string"
+      ? asset.relativePath
+      : "";
+    // Portable exports use user-facing names. Permit Unicode punctuation and
+    // case-preserved extensions while keeping every asset in one safe media
+    // filename (never an archive-controlled subdirectory or traversal path).
+    const safeMediaPath =
+      /^media\/[^/\\]+\.[a-z0-9]{1,12}$/iu.test(relativePath) &&
+      !/[\\:\x00-\x1f]/u.test(relativePath);
     if (
       !uuid.test(asset.id) ||
       assetIds.has(asset.id) ||
       typeof asset.name !== "string" ||
       typeof asset.hash !== "string" ||
-      !/^[a-f0-9]{64}$/i.test(asset.hash) ||
-      !/^media\/[\p{L}\p{N}._ ()-]+\.[a-z0-9]{1,12}$/iu.test(asset.relativePath) ||
-      paths.has(asset.relativePath.toLowerCase())
+      !/^[a-f0-9]{64}$/i.test(asset.hash)
     )
-      throw new Error("素材记录、文件路径或校验值无效");
+      throw new Error(`素材记录或校验值无效：${asset.name || asset.id || "未知素材"}`);
+    if (!safeMediaPath || paths.has(relativePath.toLowerCase()))
+      throw new Error(`素材归档路径无效或重复：${asset.name}（${relativePath || "路径缺失"}）`);
     if (
       !Number.isInteger(asset.revision) ||
       asset.revision < 1 ||
@@ -70,6 +81,7 @@ export function validateRecord(value: unknown): RecoveryRecord {
       !["candidate", "final", "rejected"].includes(asset.status) ||
       ![
         "uncategorized",
+        "product",
         "character",
         "scene",
         "prop",
@@ -89,7 +101,7 @@ export function validateRecord(value: unknown): RecoveryRecord {
     )
       throw new Error("素材属性不完整，原工程未修改");
     assetIds.add(asset.id);
-    paths.add(asset.relativePath.toLowerCase());
+    paths.add(relativePath.toLowerCase());
     delete asset.url;
   }
   for (const shot of record.shots as Shot[]) {
@@ -151,6 +163,8 @@ export function validateRecord(value: unknown): RecoveryRecord {
     record.editing = validateEditing(record.editing, record.assets);
   if (record.canvas !== undefined)
     record.canvas = validateCanvas(record.canvas, record.assets);
+  if (record.editingHistory !== undefined)
+    record.editingHistory = validateEditingHistory(record.editingHistory);
   return record as RecoveryRecord;
 }
 export async function sha256(blob: Blob): Promise<string> {
@@ -179,6 +193,23 @@ export async function validateMedia(
       throw new Error(`原片校验失败：${asset.name}。没有恢复或覆盖任何工程。`);
   }
 }
+/** Create a detached backup copy without trashed media and dangling references. */
+export function backupWithoutTrash(record: RecoveryRecord, media: RecoveryMedia[]) {
+  const copy = structuredClone(record);
+  const removed = new Set(copy.assets.filter(asset => asset.trashedAt).map(asset => asset.id));
+  copy.assets = copy.assets.filter(asset => !removed.has(asset.id));
+  for (const shot of copy.shots) if (shot.assetIds) shot.assetIds = shot.assetIds.filter(id => !removed.has(id));
+  if (copy.canvas) copy.canvas.nodes = copy.canvas.nodes.filter(node => node.kind !== "asset" || !node.assetId || !removed.has(node.assetId));
+  const cleanDocument = (doc: NonNullable<RecoveryRecord["editing"]>) => {
+    for (const paragraph of [...doc.paragraphs, ...doc.removed.map(item => item.paragraph)])
+      paragraph.links = paragraph.links.filter(link => !removed.has(link.assetId));
+  };
+  if (copy.editing) cleanDocument(copy.editing);
+  for (const entry of copy.editingHistory || []) cleanDocument(entry.document);
+  if (copy.trashShots) for (const id of removed) delete copy.trashShots[id];
+  if (copy.trashShotReferences) for (const id of removed) delete copy.trashShotReferences[id];
+  return { record: validateRecord(copy), media: media.filter(item => !removed.has(item.id)) };
+}
 export async function buildBackup(
   record: RecoveryRecord,
   media: RecoveryMedia[],
@@ -194,6 +225,7 @@ export async function buildBackup(
   json("weave.project.json", record.project);
   if (record.editing) json("metadata/editing.json", record.editing);
   if (record.canvas) json("metadata/canvas.json", record.canvas);
+  if (record.editingHistory?.length) json("metadata/editing-history.json", record.editingHistory);
   json("weave.backup.json", {
     format: "weave-backup",
     backupVersion: 1,
@@ -217,13 +249,13 @@ export async function buildBackup(
 }
 export async function parseProjectArchive(
   file: Blob,
-): Promise<{ record: RecoveryRecord; media: RecoveryMedia[] }> {
+): Promise<PreparedProjectArchive> {
   const entries = await readZip(file);
   const headers = [...entries.keys()].filter((name) =>
     /(^|\/)weave\.project\.json$/.test(name),
   );
   if (headers.length !== 1)
-    throw new Error("ZIP 内必须只有一个 Weave 工程，请选择完整项目备份。");
+    throw new Error("ZIP 内必须只有一个映箱工程，请选择完整项目备份。");
   const prefix = headers[0].slice(0, -"weave.project.json".length);
   const json = (name: string) =>
     JSON.parse(
@@ -278,6 +310,8 @@ export async function parseProjectArchive(
     );
   if (!record.canvas && entries.has(prefix + "metadata/canvas.json"))
     record.canvas = validateCanvas(json("metadata/canvas.json"), record.assets);
+  if (!record.editingHistory && entries.has(prefix + "metadata/editing-history.json"))
+    record.editingHistory = validateEditingHistory(json("metadata/editing-history.json"));
   const media = record.assets.map((asset) => {
     const data = entries.get(prefix + asset.relativePath);
     if (!data) throw new Error(`备份缺少原片：${asset.name}`);
@@ -288,5 +322,5 @@ export async function parseProjectArchive(
     };
   });
   await validateMedia(record, media);
-  return { record, media };
+  return { record, media, archiveKind: entries.has(prefix + "weave.backup.json") ? "backup" : "delivery" };
 }

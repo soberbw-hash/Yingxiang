@@ -6,6 +6,7 @@ import {
   Play,
   Stack,
   DownloadSimple,
+  Star,
 } from "@phosphor-icons/react";
 import type { MouseEvent, DragEvent } from "react";
 import type { Asset } from "../types";
@@ -17,6 +18,8 @@ import {
   writeMediaFileDrag,
   downloadOriginal,
   prepareAudioDragFile,
+  prepareVideoDragFile,
+  startNativeAssetDrag,
 } from "../services/assetOutbound";
 import {
   assetCategoryStyle,
@@ -25,6 +28,13 @@ import {
 import { AudioThumbnail } from "./AudioThumbnail";
 import { originalTileSize } from "../services/libraryLayout";
 import { bindDragCleanup } from "../services/dragLifecycle";
+
+// Ratios are safe to reuse for the same original, even when a view unmounts.
+const intrinsicRatios = new Map<string, number>();
+function rememberRatio(key: string, ratio: number) {
+  if (intrinsicRatios.size >= 2000 && !intrinsicRatios.has(key)) intrinsicRatios.delete(intrinsicRatios.keys().next().value!);
+  intrinsicRatios.set(key, ratio);
+}
 
 export function AssetThumb({
   asset,
@@ -43,6 +53,9 @@ export function AssetThumb({
   onStackDrop,
   onReorderDrop,
   onIntrinsicRatio,
+  projectId,
+  favorite = false,
+  onFavorite,
 }: {
   asset: Asset;
   selected: boolean;
@@ -60,6 +73,9 @@ export function AssetThumb({
   onStackDrop?: (event: DragEvent) => void;
   onReorderDrop?: (event: DragEvent) => void;
   onIntrinsicRatio?: (ratio: number) => void;
+  projectId?: string;
+  favorite?: boolean;
+  onFavorite?: () => void;
 }) {
   const [dropHover, setDropHover] = useState(false);
   useEffect(
@@ -69,9 +85,10 @@ export function AssetThumb({
   const [videoState, setVideoState] = useState<"loading" | "ready" | "error">(
     "loading",
   );
-  const [ratio, setRatio] = useState(
-    asset.width && asset.height ? asset.width / asset.height : 1,
-  );
+  const ratioKey = `${asset.id}:${asset.hash || asset.url || ""}`;
+  const initialRatio = intrinsicRatios.get(ratioKey) || (asset.width && asset.height ? asset.width / asset.height : undefined);
+  const [ratio, setRatio] = useState(initialRatio || 1);
+  const [ratioReady, setRatioReady] = useState(!!initialRatio || !["image", "video"].includes(asset.kind));
   return (
     <article
       className={`asset-card names-${display.names} ${selected ? "selected" : ""}`}
@@ -82,6 +99,7 @@ export function AssetThumb({
       data-category={asset.category}
       data-kind={asset.kind}
       data-original-size={originalTileSize(asset, ratio)}
+      data-ratio-pending={display.layout === "original" && !ratioReady ? "true" : undefined}
       data-selected={selected}
       data-preview-asset={asset.id}
       data-stack-count={stackCount}
@@ -89,10 +107,14 @@ export function AssetThumb({
       onPointerEnter={() => {
         if (canPreview && asset.kind === "audio")
           void prepareAudioDragFile(asset).catch(() => {});
+        if (canPreview && asset.kind === "video")
+          void prepareVideoDragFile(asset).catch(() => {});
       }}
       onFocus={() => {
         if (canPreview && asset.kind === "audio")
           void prepareAudioDragFile(asset).catch(() => {});
+        if (canPreview && asset.kind === "video")
+          void prepareVideoDragFile(asset).catch(() => {});
       }}
       onClick={onSelect}
       onDoubleClick={canPreview ? onPreview : undefined}
@@ -156,6 +178,8 @@ export function AssetThumb({
         }
       }}
       onDragStart={(e) => {
+        if (!asset.trashedAt && startNativeAssetDrag(e, projectId, asset.id))
+          return;
         if (onDragStart) onDragStart(e);
         else writeAssetDrag(e.dataTransfer, [asset]);
         writeMediaFileDrag(e.dataTransfer, asset);
@@ -183,10 +207,13 @@ export function AssetThumb({
               const image = event.currentTarget;
               if (image.naturalWidth && image.naturalHeight) {
                 const nextRatio = image.naturalWidth / image.naturalHeight;
+                rememberRatio(ratioKey, nextRatio);
                 setRatio(nextRatio);
+                setRatioReady(true);
                 onIntrinsicRatio?.(nextRatio);
               }
             }}
+            onError={() => setRatioReady(true)}
           />
         ) : asset.kind === "video" ? (
           <video
@@ -197,7 +224,9 @@ export function AssetThumb({
             onLoadedMetadata={(e) => {
               if (e.currentTarget.videoWidth && e.currentTarget.videoHeight) {
                 const nextRatio = e.currentTarget.videoWidth / e.currentTarget.videoHeight;
+                rememberRatio(ratioKey, nextRatio);
                 setRatio(nextRatio);
+                setRatioReady(true);
                 onIntrinsicRatio?.(nextRatio);
               }
               const video = e.currentTarget;
@@ -213,7 +242,7 @@ export function AssetThumb({
               }
             }}
             onSeeked={() => setVideoState("ready")}
-            onError={() => setVideoState("error")}
+            onError={() => { setVideoState("error"); setRatioReady(true); }}
           />
         ) : asset.kind === "audio" ? (
           <AudioThumbnail asset={asset} />
@@ -247,6 +276,9 @@ export function AssetThumb({
         >
           {selected && <Check size={12} weight="bold" />}
         </button>
+        {onFavorite && <button type="button" className={`asset-favorite ${favorite ? "is-favorite" : ""}`} aria-pressed={favorite} aria-label={`${favorite ? "取消收藏" : "收藏"} ${asset.name}`} title={favorite ? "取消收藏" : "收藏素材"} draggable={false}
+          onPointerDown={event => event.stopPropagation()} onDragStart={event => { event.preventDefault(); event.stopPropagation(); }}
+          onDoubleClick={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onFavorite(); }}><Star size={15} weight={favorite ? "fill" : "regular"} /></button>}
         {canPreview && asset.kind === "image" && (
           <button
             type="button"
@@ -276,7 +308,7 @@ export function AssetThumb({
             title={
               asset.kind === "audio"
                 ? "下载原音频；到目标网站选择此文件上传。兼容的目标也可尝试拖出"
-                : "拖出当前视频；不兼容时点击下载后从下载记录拖入剪辑软件"
+                : "悬停素材卡片后拖出原视频；不兼容时点击下载，再从下载记录拖入剪辑软件"
             }
             aria-label={`下载或拖出 ${asset.name}`}
             draggable

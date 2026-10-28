@@ -29,8 +29,8 @@ const media = new Set([
 const folders: Record<string, AssetCategory> = {
   角色: "character",
   场景: "scene",
-  道具: "prop",
-  产品: "prop",
+  道具: "uncategorized",
+  产品: "product",
   分镜: "storyboard",
   脚本: "script",
   视频: "video",
@@ -63,6 +63,8 @@ export async function scanDirectory(
   const now = options.now ?? Date.now();
   const files: ScannedFile[] = [],
     warnings: string[] = [];
+  const knownPaths: { path: string; hash: string }[] = [];
+  const scannedFolders: string[] = [];
   const visited = new Set<string>();
   let count = 0,
     bytes = 0,
@@ -91,6 +93,7 @@ export async function scanDirectory(
           (await optionalJson(entry, "weave.project.json"))
         )
           continue;
+        if (depth === 0) scannedFolders.push(entry.name);
         await walk(entry, path + "/", depth + 1);
         continue;
       }
@@ -129,7 +132,10 @@ export async function scanDirectory(
         continue;
       }
       const hash = await hashBlob(blob);
-      if (options.knownHashes?.has(hash)) continue;
+      if (options.knownHashes?.has(hash)) {
+        knownPaths.push({ path, hash });
+        continue;
+      }
       if (files.length >= 100 || bytes + blob.size > 500 * 1024 * 1024) {
         pending++;
         continue;
@@ -165,5 +171,5 @@ export async function scanDirectory(
   };
   await walk(root, "", 0);
   for (const key of state.keys()) if (!visited.has(key)) state.delete(key);
-  return { files, warnings, pending };
+  return { files, warnings, pending, knownPaths, folders: scannedFolders };
 }

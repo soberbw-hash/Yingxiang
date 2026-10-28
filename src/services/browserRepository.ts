@@ -6,6 +6,7 @@ import type {
   ProjectSnapshot,
   Settings,
   Shot,
+  EditAction,
 } from "../types";
 import { createZip, type ZipEntry } from "./zip.ts";
 import { shotAssetIds } from "../types.ts";
@@ -22,6 +23,8 @@ import {
   validateEditing,
 } from "../../shared/editing.mjs";
 import { saveCanvas, validateCanvas, canvasForExport } from "../../shared/canvas.mjs";
+import { rememberEditingVersion } from "../../shared/editing-history.mjs";
+import { backupWithoutTrash, buildBackup, parseProjectArchive } from "./projectArchive.ts";
 
 const DB_NAME = "weave-browser";
 const DB_VERSION = 1;
@@ -31,7 +34,8 @@ export function namedExportPaths(assets: Asset[]) {
     const storedExt = asset.relativePath.split(".").pop() || "bin";
     const namedExt = asset.name.match(/\.([a-z0-9]{1,12})$/i)?.[1] || storedExt;
     const rawBase = asset.name.replace(/\.[^.\\/]+$/, "");
-    const base = (rawBase.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/g, "").trim().slice(0, 120) || "素材");
+    let base = Array.from(rawBase.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim()).slice(0, 120).join("").replace(/[. ]+$/g, "") || "素材";
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(base)) base = `_${base}`;
     let filename = `${base}.${namedExt}`;
     let suffix = 1;
     while (used.has(filename.toLocaleLowerCase())) {
@@ -128,9 +132,11 @@ export async function browserProjectData(id: string) {
 export async function installBrowserProject(
   record: ProjectRecord,
   media: { id: string; hash: string; blob: Blob }[],
+  createOnly = false,
 ) {
   await transaction("readwrite", async (tx) => {
-    tx.objectStore("projects").put(record);
+    if (createOnly) tx.objectStore("projects").add(record);
+    else tx.objectStore("projects").put(record);
     for (const item of media)
       tx.objectStore("blobs").put({ ...item, projectId: record.project.id });
     return undefined;
@@ -202,7 +208,7 @@ function openDatabase(): Promise<IDBDatabase> {
       request.onblocked = () =>
         reject(
           new Error(
-            "项目存储升级被其他标签页阻止，请关闭其他 Weave 标签页后重试",
+            "项目存储升级被其他标签页阻止，请关闭其他映箱标签页后重试",
           ),
         );
       request.onsuccess = () => {
@@ -419,6 +425,7 @@ function identify(name: string, bytes: Uint8Array) {
 }
 const categories = new Set<AssetCategory>([
   "uncategorized",
+  "product",
   "character",
   "scene",
   "prop",
@@ -626,6 +633,7 @@ async function bootstrap(): Promise<Bootstrap> {
     shots: current.shots,
     activities: current.activities,
     editing: current.editing,
+    editingHistory: current.editingHistory,
     canvas: current.canvas,
     assets: current.assets.map((asset, index) => {
       const stored = blobs[index];
@@ -1241,6 +1249,7 @@ export async function browserInvoke(
     }
     case "editReference": {
       return mutateProject(payload, "editing.updated", (record, state) => {
+        const history = rememberEditingVersion(record.editingHistory, record.editing, payload.action as EditAction);
         record.editing = applyEditing(
           record.editing,
           payload.action as any,
@@ -1248,6 +1257,7 @@ export async function browserInvoke(
           record.shots,
           payload.revision as number,
         );
+        record.editingHistory = history;
         activity(record, state, "editing.updated", "更新剪辑文稿");
         return { revision: record.editing?.revision || 0 };
       });
@@ -1470,6 +1480,20 @@ export async function browserInvoke(
       if (loaded.blob.size > 2 * 1024 * 1024)
         throw new Error("文档超过 2 MiB，请下载后打开");
       return loaded.blob.text();
+    }
+    case "exportBackup": {
+      const data = await browserProjectData(String(payload.projectId));
+      const includeTrash = payload.includeTrash !== false;
+      const backup = includeTrash ? data : backupWithoutTrash(data.record, data.media);
+      if (backup.media.reduce((sum, item) => sum + item.blob.size, 0) >= 512 * 1024 * 1024)
+        throw new Error("原片已超过浏览器 ZIP 恢复的 512 MB 上限；请在设置中另存到本地文件夹，并备份整个项目文件夹。");
+      const archive = await buildBackup(backup.record, backup.media);
+      // Use the actual recovery reader before offering a recovery package.
+      const verified = await parseProjectArchive(archive);
+      if (verified.record.assets.length !== backup.record.assets.length || verified.record.assets.filter(asset => asset.trashedAt).length !== backup.record.assets.filter(asset => asset.trashedAt).length)
+        throw new Error("备份回读数量不一致，未提供不完整的备份");
+      download(archive, `${data.record.project.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")}_${includeTrash ? "完整备份" : "备份（不含回收站）"}.zip`);
+      return { verified: true, downloaded: true, assetCount: verified.media.length, trashCount: verified.record.assets.filter(asset => asset.trashedAt).length, includeTrash, paragraphCount: verified.record.editing?.paragraphs.length || 0, size: archive.size, createdAt: new Date().toISOString() };
     }
     case "exportProject": {
       if (payload.format === "folder")

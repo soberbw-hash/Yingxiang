@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArchiveBox,
   ArrowRight,
   Bell,
   Check,
@@ -11,6 +10,7 @@ import {
   Plus,
   Stack,
   Trash,
+  UsersThree,
   UploadSimple,
   X,
   MagnifyingGlass,
@@ -43,6 +43,7 @@ import { ExportDialog } from "./features/ExportDialog";
 import { AssetOutboundDialog } from "./features/AssetOutboundDialog";
 import { copyAssetImage } from "./services/assetOutbound";
 import { bindDragCleanup } from "./services/dragLifecycle";
+import { droppedMediaUrl } from "./services/assetDrop";
 import { useSharedLibrary } from "./features/useSharedLibrary";
 import { SharedLibraryView } from "./features/SharedLibraryView";
 import { LocalFolderSettings } from "./features/LocalFolderSettings";
@@ -52,8 +53,12 @@ import { expandStackIds, type StackAction } from "../shared/asset-stacks.mjs";
 import { useProjectFolderSync } from "./features/useProjectFolderSync";
 import { attachProjectFolder } from "./services/folderBrowser";
 import { pickDirectory } from "./services/directoryFiles";
-import { parseProjectArchive } from "./services/projectArchive";
+import type { PreparedProjectArchive } from "./services/projectArchive";
 import { installBrowserProject } from "./services/browserRepository";
+import { StorageNotice } from "./features/StorageNotice";
+import { useSaveStatus } from "./features/useSaveStatus";
+import "./features/workflow.css";
+import { readResume, writePreference } from "./services/workspacePreferences";
 import type { BackupInfo } from "./services/projectArchive";
 import { PublishToLibraryDialog } from "./features/PublishToLibraryDialog";
 import { folderConnections } from "./services/folderConnections";
@@ -61,6 +66,7 @@ import "./features/features.css";
 
 type View = "projects" | "library" | "shots" | "activity" | "trash" | "public";
 export function App() {
+  const saveStatus = useSaveStatus();
   const {
     projects,
     snapshot,
@@ -74,14 +80,19 @@ export function App() {
     clearError,
   } = useWorkspace();
   const [view, setViewState] = useState<View>("library");
-  const canLeaveEditing = () =>
-    !document.querySelector('[data-editing-dirty="true"]') ||
-    window.confirm(
-      "文字、批注或画布尚未保存。离开会丢弃未保存的输入，确定离开？",
+  const [visitedShots, setVisitedShots] = useState(false);
+  const canLeaveEditing = () => {
+    const dirty = document.querySelector(
+      '.workspace-view-cache > div:not([hidden]) [data-editing-dirty="true"]',
     );
+    return !dirty || window.confirm(
+      "当前有未保存的文字、批注或画布内容。切换后仍会保留在当前项目；如果接着切换项目，未保存内容可能丢失。确定切换？",
+    );
+  };
   const setView = (next: View) => {
     if (next !== view && canLeaveEditing()) {
       setSelection([]);
+      if (next === "shots") setVisitedShots(true);
       setViewState(next);
     }
   };
@@ -105,7 +116,7 @@ export function App() {
   const [publishAssets, setPublishAssets] = useState<Asset[]>([]);
   const sharedLibrary = useSharedLibrary(
     settings.deviceId || "",
-    settings.notifications,
+    !isDesktop || settings.notifications,
     () => setView("activity"),
   );
   const quickPreview = useQuickPreview([
@@ -134,6 +145,7 @@ export function App() {
   useEffect(resetDragging, [view, filter, resetDragging]);
   const [urlOpen, setUrlOpen] = useState(false);
   const [url, setUrl] = useState("");
+  const [urlCategory, setUrlCategory] = useState<AssetCategory>();
   const [urlTarget, setUrlTarget] = useState<{
     projectId: string;
     category: AssetCategory;
@@ -158,12 +170,30 @@ export function App() {
   const fileInput = useRef<HTMLInputElement>(null),
     folderInput = useRef<HTMLInputElement>(null);
   const projectId = snapshot?.project.id;
+  const [resumedProject, setResumedProject] = useState("");
+  useEffect(() => {
+    if (!projectId) return;
+    const resume = readResume(projectId);
+    setViewState(resume.view);
+    if (resume.view === "shots") setVisitedShots(true);
+    setSearch(resume.search);
+    setFilter(resume.filter as AssetCategory | "all");
+    setResumedProject(projectId);
+  }, [projectId]);
+  useEffect(() => {
+    if (!projectId || resumedProject !== projectId || !["library", "shots"].includes(view)) return;
+    writePreference(`weave.resume.${projectId}`, { view, search, filter });
+  }, [projectId, resumedProject, view, search, filter]);
   const listProjectBackups = useCallback(
     async () => (await invoke("listProjectBackups", { projectId })) as BackupInfo[],
     [projectId],
   );
   const createProjectBackup = useCallback(
-    async () => (await run("createProjectBackup", { projectId })) as BackupInfo,
+    async () => {
+      const result = (await run("createProjectBackup", { projectId })) as BackupInfo;
+      writePreference(`weave.last-backup.${projectId}`, { createdAt: result.createdAt, assetCount: result.assetCount });
+      return result;
+    },
     [run, projectId],
   );
   const restoreProjectBackup = useCallback(async (backupId: string) => {
@@ -208,17 +238,15 @@ export function App() {
   useEffect(() => {
     const unsubscribe = window.weaveDesktop?.onUpdate((status) => {
       if (status?.state === "downloaded")
-        notify(`Weave ${status.version} 更新包已下载并校验，请关闭软件后按提示替换程序文件。`);
+        notify(`映箱 ${status.version} 更新包已下载并校验，请关闭软件后按提示替换程序文件。`);
       else if (status?.state === "error")
-        notify(status.message || "Weave 自动更新失败，可在设置中重新检查。旧版本未受影响。");
+        notify(status.message || "映箱自动更新失败，可在设置中重新检查。旧版本未受影响。");
     });
     return unsubscribe;
   }, [notify]);
   useEffect(() => {
     setSelection([]);
     setPreviewId("");
-    setSearch("");
-    setFilter("all");
   }, [projectId, view]);
   useEffect(() => setOutboundAssets([]), [projectId]);
   useEffect(() => {
@@ -240,35 +268,28 @@ export function App() {
       await run("saveSettings", {
         patch: { receiveProjectId: "", receiveShotId: "" },
       });
-    setViewState("library");
   };
-  const restoreProjectArchive = async (file: File) => {
+  const restoreProjectArchive = async ({ record, media }: PreparedProjectArchive) => {
     if (isDesktop) throw new Error("桌面版请先解压备份，再用“打开项目文件夹”导入。");
-    const { record, media } = await parseProjectArchive(file);
     const restored = structuredClone(record);
     const id = crypto.randomUUID();
-    const originalName = restored.project.name.trim();
+    const originalName = restored.project.name.trim().replace(/(?:（恢复(?: \d+)?）)+$/u, "");
     let name = `${originalName}（恢复）`;
     let suffix = 2;
     while (projects.some(project => project.name === name)) name = `${originalName}（恢复 ${suffix++}）`;
     restored.project = { ...restored.project, id, name, root: `indexeddb://${id}`, createdAt: new Date().toISOString() };
     restored.publicInbox = false;
-    await installBrowserProject(restored, media);
+    await installBrowserProject(restored, media, true);
     await run("selectProject", { id });
     setViewState("library");
     notify(`已恢复为独立项目「${name}」，原项目和备份均未覆盖。`);
     await refresh();
   };
-  const ensureInbox = async (): Promise<string> => {
-    let project = useWorkspace.getState().projects.find((p) => p.publicInbox);
-    if (!project) {
-      await run("createProject", { name: "待整理", publicInbox: true });
-      project = useWorkspace.getState().projects.find((p) => p.publicInbox);
-    }
-    if (!project) throw new Error("无法打开待整理");
-    return project.id;
+  const receivingId = projectId || "";
+  const requireReceivingProject = (id?: string) => {
+    if (!id) throw new Error("请先选择或新建项目，再导入素材。");
+    return id;
   };
-  const receivingId = settings.receiveProjectId || projectId || "";
   const importFiles = async (
     files: File[],
     category?: AssetCategory,
@@ -279,18 +300,19 @@ export function App() {
       (file) => supportedFile(file) || (isDesktop && !file.type),
     );
     if (!accepted.length) throw new Error("这批文件没有支持的图片、视频或文档");
-    const targetId = target?.projectId || receivingId || (await ensureInbox());
+    const targetId = requireReceivingProject(target?.projectId || receivingId);
     if (isDesktop && target?.stackTargetId)
       throw new Error(
         "请先导入视频，再把已有视频卡片拖到一起；本次未导入或移动文件",
       );
+    const destination = category ?? (!target && view === "library" && filter !== "all" ? filter : "uncategorized");
     const named = await importNaming.prepare(accepted);
     if (!named) return;
     const prepared = await prepareFiles(named);
     const result = await run("importFiles", {
       projectId: targetId,
       ...prepared,
-      category: category || "uncategorized",
+      category: destination,
       ...(target?.stackTargetId
         ? {
             stackTargetId: target.stackTargetId,
@@ -302,11 +324,7 @@ export function App() {
             ),
           }
         : {}),
-      shotId: target
-        ? target.shotId
-        : settings.receiveProjectId === targetId
-          ? settings.receiveShotId
-          : "",
+      shotId: target?.shotId || "",
     });
     if (targetId !== projectId) await selectProject(targetId);
     else if (!target) setView("library");
@@ -327,14 +345,14 @@ export function App() {
   };
   const pickFiles = () =>
     attempt(async () => {
+      const targetId = requireReceivingProject(receivingId);
       if (!isDesktop) {
         fileInput.current?.click();
         return;
       }
-      const targetId = receivingId || (await ensureInbox());
       const result = await run("pickFiles", {
         projectId: targetId,
-        shotId: settings.receiveShotId,
+        shotId: "",
       });
       if (!result?.canceled) {
         await selectProject(targetId);
@@ -375,12 +393,6 @@ export function App() {
       setSelection([]);
       notify("已移入回收站，原文件仍可恢复");
     });
-  const setReceive = async (id: string, shotId = "") => {
-    await run("saveSettings", {
-      patch: { receiveProjectId: id, receiveShotId: shotId },
-    });
-  };
-
   useEffect(() => {
     const paste = (event: ClipboardEvent) => {
       const target = event.target as HTMLElement;
@@ -415,6 +427,7 @@ export function App() {
         event.preventDefault();
         setUrl(imageUrl || text);
         setUrlTarget(undefined);
+        setUrlCategory(view === "library" && filter !== "all" ? filter : undefined);
         setUrlOpen(true);
       }
     };
@@ -469,10 +482,6 @@ export function App() {
           : true),
     ) || [];
   const receiver = projects.find((p) => p.id === receivingId);
-  const receivingShot =
-    settings.receiveProjectId === projectId
-      ? snapshot?.shots.find((s) => s.id === settings.receiveShotId)
-      : undefined;
   const activeCount = snapshot?.assets.filter((a) => !a.trashedAt).length || 0;
   const transferProps = {
     projects,
@@ -554,7 +563,7 @@ export function App() {
         project={snapshot?.project}
         display={libraryDisplay}
         clientId={settings.deviceId || ""}
-        notificationsEnabled={settings.notifications}
+        notificationsEnabled={!isDesktop || settings.notifications}
         onNotificationsChange={async (enabled) => {
           await run("saveSettings", { patch: { notifications: enabled } });
         }}
@@ -615,45 +624,63 @@ export function App() {
         onRestoreArchive={restoreProjectArchive}
       />
     );
-  else if (view === "shots")
-    content = (
-      <EditingWorkspace
-        key={snapshot.project.id}
-        snapshot={snapshot}
-        onEdit={(action, revision) =>
-          run("editReference", { projectId, action, revision })
-        }
-        onImport={async (files) => {
-          const accepted = files.filter(
-            (file) =>
-              supportedFile(file) &&
-              !/\.(txt|md|json|pdf|docx?)$/i.test(file.name),
-          );
-          if (!accepted.length || accepted.length !== files.length)
-            throw new Error(
-              "这里只关联图片、视频或音频，请移除不支持的文件后重试",
+  else if (view === "shots" || view === "library" || view === "trash")
+    content = null;
+
+  const importControls = <div className="library-import-controls">
+    <label className="import-naming-toggle" title="开启后，导入图片时先命名；原始来源文件不改动">
+      <input type="checkbox" role="switch" aria-label="导入时命名" checked={importNaming.enabled} onChange={importNaming.toggle} />
+      <span>导入时命名</span>
+    </label>
+    {isDesktop && <button className="watch-status" onClick={() => setSettingsOpen(true)}>{settings.inboxPath ? `监听：${settings.inboxPath}` : "设置下载接收目录"}</button>}
+    <button className="primary-button" disabled={busy} onClick={pickFiles}><Plus size={16} />导入素材</button>
+    <button title="导入图片、视频或音频直链" aria-label="导入图片、视频或音频直链" onClick={() => { setUrl(""); setUrlTarget(undefined); setUrlCategory(view === "library" && filter !== "all" ? filter : undefined); setUrlOpen(true); }}><ArrowRight size={17} /></button>
+    <button title="导入文件夹" aria-label="导入文件夹" disabled={busy} onClick={() => folderInput.current?.click()}><FolderOpen size={17} /></button>
+  </div>;
+  const cachedWorkspace = snapshot && projectId && !loading ? (
+    <div className="workspace-view-cache" hidden={view === "projects" || view === "public" || view === "activity"}>
+      <div hidden={view !== "shots" || !visitedShots}>
+        {visitedShots && <EditingWorkspace
+          key={snapshot.project.id}
+          active={view === "shots"}
+          snapshot={snapshot}
+          projectId={projectId}
+          onEdit={async (action, revision) => {
+            const result = await run("editReference", { projectId, action, revision });
+            return { ...result, editing: useWorkspace.getState().snapshot?.editing };
+          }}
+          onImport={async (files) => {
+            const accepted = files.filter(
+              (file) =>
+                supportedFile(file) &&
+                !/\.(txt|md|json|pdf|docx?)$/i.test(file.name),
             );
-          if (
-            accepted.reduce((sum, file) => sum + file.size, 0) >
-            300 * 1024 * 1024
-          )
-            throw new Error("本次素材超过 300 MB，请分批导入");
-          return (await importFiles(accepted, "uncategorized", {
-            projectId: snapshot.project.id,
-            shotId: "",
-          })) || [];
-        }}
-        onStackAction={editAssetStack}
-        onPreview={(a) => {
-          setSelection([]);
-          quickPreview.open(a);
-        }}
-      />
-    );
-  else
-    content = (
+            if (!accepted.length || accepted.length !== files.length)
+              throw new Error(
+                "这里只关联图片、视频或音频，请移除不支持的文件后重试",
+              );
+            if (
+              accepted.reduce((sum, file) => sum + file.size, 0) >
+              300 * 1024 * 1024
+            )
+              throw new Error("本次素材超过 300 MB，请分批导入");
+            return (await importFiles(accepted, "uncategorized", {
+              projectId: snapshot.project.id,
+              shotId: "",
+            })) || [];
+          }}
+          onStackAction={editAssetStack}
+          onPreview={(a) => {
+            setSelection([]);
+            quickPreview.open(a);
+          }}
+        />}
+      </div>
+      <div hidden={view !== "library" && view !== "trash"}>
       <AssetsView
         key={snapshot.project.id}
+        active={view === "library" || view === "trash"}
+        importControls={importControls}
         {...transferProps}
         canvas={snapshot.canvas}
         onSaveCanvas={(canvas, revision) => run("saveCanvas", { projectId, canvas, revision })}
@@ -678,7 +705,7 @@ export function App() {
             sharedLibrary.connection.mode === "readonly"
           ) {
             setView("public");
-            notify("请先连接可写的 Weave 公共库；现有目录也可只读关联");
+            notify("请先连接可写的映箱公共库；现有目录也可只读关联");
             return;
           }
           setPublishAssets(assets);
@@ -741,10 +768,13 @@ export function App() {
           setSelection([]);
         }}
         search={search}
+        onSearchChange={setSearch}
         trash={view === "trash"}
         busy={busy}
       />
-    );
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div
@@ -784,12 +814,10 @@ export function App() {
         const files = Array.from(e.dataTransfer.files);
         if (files.length) attempt(() => importFiles(files));
         else {
-          const link = e.dataTransfer
-            .getData("text/uri-list")
-            .split("\n")
-            .find((l) => l && !l.startsWith("#"));
+          const link = droppedMediaUrl(e.dataTransfer);
           if (link) {
             setUrlTarget(undefined);
+            setUrlCategory(view === "library" && filter !== "all" ? filter : undefined);
             setUrl(link);
             setUrlOpen(true);
           }
@@ -813,7 +841,7 @@ export function App() {
           <span className="brand-symbol">
             <Stack size={23} weight="duotone" />
           </span>
-          Weave
+          映箱
         </button>
         <button
           className={`nav-button ${view === "projects" ? "active" : ""}`}
@@ -822,21 +850,12 @@ export function App() {
           <FolderSimple size={19} />
           全部项目
         </button>
-        <button
-          className={`nav-button ${snapshot?.project.publicInbox && view !== "projects" && view !== "public" && view !== "activity" ? "active" : ""}`}
-          title="尚未分配到项目的本机素材，不与团队共享"
-          onClick={() =>
-            attempt(async () => {
-              if (!canLeaveEditing()) return;
-              const id = await ensureInbox();
-              await selectProject(id);
-            })
-          }
-        >
-          <ArchiveBox size={18} />
-          待整理
-        </button>
-        <div className="sidebar-label">当前项目</div>
+        <div className="sidebar-label">
+          当前项目
+          <button aria-label="新建项目" title="新建项目" onClick={() => setNewProject("")}>
+            <Plus size={14} />
+          </button>
+        </div>
         <button
           className="current-project"
           title={projectLabel(snapshot?.project)}
@@ -878,26 +897,23 @@ export function App() {
         </nav>
         <div className="sidebar-divider" />
         <button
-          className={`nav-button ${view === "public" ? "active" : ""}`}
+          className={`nav-button public-library-nav ${view === "public" ? "active" : ""}`}
+          title="团队共用的公共资产库"
           onClick={() => setView("public")}
         >
-          <Stack size={18} />
+          <UsersThree size={18} weight="duotone" />
           <span>公共资产库</span>
         </button>
-        <div className="sidebar-label">
-          最近项目
-          <button aria-label="新建项目" onClick={() => setNewProject("")}>
-            <Plus size={14} />
-          </button>
-        </div>
+        {projects.some((p) => !p.publicInbox && p.id !== projectId) && <>
+        <div className="sidebar-label">其他项目</div>
         <div className="recent-projects">
           {projects
-            .filter((p) => !p.publicInbox)
+            .filter((p) => !p.publicInbox && p.id !== projectId)
             .slice(0, 8)
             .map((p) => (
               <button
                 key={p.id}
-                className={p.id === projectId ? "current" : ""}
+                title={p.name}
                 onClick={() => attempt(() => selectProject(p.id))}
               >
                 <span className="project-dot" />
@@ -905,6 +921,7 @@ export function App() {
               </button>
             ))}
         </div>
+        </>}
         <div className="sidebar-bottom">
           <button
             className={`nav-button ${view === "activity" ? "active" : ""}`}
@@ -919,9 +936,6 @@ export function App() {
             <Gear size={18} />
             设置
           </button>
-          <span className="storage-label">
-            {isDesktop ? "文件保存在项目目录" : "本地项目 · 独立公共库"}
-          </span>
         </div>
       </aside>
       <main className="workspace">
@@ -973,6 +987,7 @@ export function App() {
             </label>
           )}
           <div className="topbar-actions">
+            {!isDesktop && <StorageNotice project={snapshot?.project} status={folderSync.status} onBackup={() => setExportOpen(true)} />}
             <button
               className="activity-button"
               title="通知"
@@ -986,119 +1001,11 @@ export function App() {
             {snapshot && view !== "public" && view !== "activity" && (
               <button onClick={() => setExportOpen(true)}>
                 <UploadSimple size={16} />
-                导出项目
+                备份与导出
               </button>
             )}
           </div>
         </header>
-        {!isDesktop && (
-          <div className="preview-notice">
-            {snapshot?.project.root.startsWith("directory:")
-              ? `当前项目写入已授权目录 · ${folderSync.status || "自动检查目录"}。`
-              : "当前项目保存在本机浏览器，请定期导出 ZIP 备份；可在设置中另存到本地目录。"}{" "}
-            公共库需要单独连接，关闭网页不持续接收更新。
-          </div>
-        )}
-        {view !== "public" && view !== "activity" && view !== "shots" && (
-          <div className="receive-bar">
-            <div>
-              <span className="receive-dot" />
-              <span>新素材保存至</span>
-              <select
-                aria-label="素材接收项目"
-                value={settings.receiveProjectId || ""}
-                onChange={(e) =>
-                  attempt(async () => {
-                    const id =
-                      e.target.value === "__inbox"
-                        ? await ensureInbox()
-                        : e.target.value;
-                    await setReceive(id);
-                  })
-                }
-              >
-                <option value="">
-                  当前项目
-                  {snapshot ? ` · ${projectLabel(snapshot.project)}` : ""}
-                </option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {projectLabel(p)}
-                  </option>
-                ))}
-                {!projects.some((p) => p.publicInbox) && (
-                  <option value="__inbox">待整理</option>
-                )}
-              </select>
-              {receivingShot && (
-                <span className="receiving-shot">
-                  / {receivingShot.title}
-                  <button
-                    title="取消接收镜头"
-                    onClick={() =>
-                      attempt(() => setReceive(settings.receiveProjectId))
-                    }
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              )}
-            </div>
-            <div>
-              <label
-                className="import-naming-toggle"
-                title="开启后，导入图片时先命名；原始来源文件不改动"
-              >
-                <input
-                  type="checkbox"
-                  role="switch"
-                  aria-label="导入时命名"
-                  checked={importNaming.enabled}
-                  onChange={importNaming.toggle}
-                />
-                <span>导入时命名</span>
-              </label>
-              {isDesktop ? (
-                <button
-                  className="watch-status"
-                  onClick={() => setSettingsOpen(true)}
-                >
-                  {settings.inboxPath
-                    ? `监听：${settings.inboxPath}`
-                    : "设置下载接收目录"}
-                </button>
-              ) : (
-                <span className="paste-hint">拖入文件 · Ctrl V 粘贴图片</span>
-              )}
-              <button
-                className="primary-button"
-                disabled={busy}
-                onClick={pickFiles}
-              >
-                <Plus size={16} />
-                导入素材
-              </button>
-              <button
-                title="导入图片 / 视频直链"
-                onClick={() => {
-                  setUrl("");
-                  setUrlTarget(undefined);
-                  setUrlOpen(true);
-                }}
-              >
-                <ArrowRight size={17} />
-              </button>
-              <button
-                title="导入文件夹"
-                aria-label="导入文件夹"
-                disabled={busy}
-                onClick={() => folderInput.current?.click()}
-              >
-                <FolderOpen size={17} />
-              </button>
-            </div>
-          </div>
-        )}
         {(error || warning) && (
           <div className="error-banner">
             <span>{error || warning}</span>
@@ -1107,22 +1014,18 @@ export function App() {
             </button>
           </div>
         )}
+        {cachedWorkspace}
         {content}
         <footer className="workspace-footer">
           <span>
-            {busy ? "正在保存…" : "已就绪"}
-            {snapshot &&
-              view !== "projects" &&
-              view !== "public" &&
-              view !== "activity" &&
-              ` · ${activeCount} 个素材${view === "shots" ? ` · ${snapshot.editing?.paragraphs.length || 0} 段文稿` : ""}`}
+            {saveStatus.failed ? "自动保存失败 · 编辑内容仍保留" : busy ? "正在保存…" : saveStatus.pending ? "有内容尚未保存" : error ? "操作未完成 · 请查看提示" : warning ? "保存位置需确认 · 请查看提示" : ""}
           </span>
           <span title={snapshot?.project.root}>
             {view === "public" || view === "activity"
               ? sharedLibrary.connection?.name || "未连接公共库"
               : snapshot && view !== "projects"
-                ? snapshot.project.root
-                : "Weave"}
+                ? isDesktop ? snapshot.project.root : snapshot.project.root.startsWith("directory:") ? "本地项目文件夹" : "浏览器本地项目"
+                : "映箱"}
           </span>
         </footer>
       </main>
@@ -1214,14 +1117,13 @@ export function App() {
             onSubmit={(e) => {
               e.preventDefault();
               attempt(async () => {
+                const targetId = requireReceivingProject(urlTarget?.projectId || receivingId);
                 const file = await prepareRemote(url);
-                const targetId =
-                  urlTarget?.projectId || receivingId || (await ensureInbox());
                 await run("importFiles", {
                   projectId: targetId,
                   files: [file],
-                  shotId: urlTarget ? "" : settings.receiveShotId,
-                  category: urlTarget?.category,
+                  shotId: "",
+                  category: urlTarget?.category ?? urlCategory,
                 });
                 await selectProject(targetId);
                 setUrlOpen(false);
@@ -1236,7 +1138,7 @@ export function App() {
               </button>
             </div>
             <label>
-              图片或视频直链
+              图片、视频或音频直链
               <input
                 autoFocus
                 type="url"
@@ -1269,10 +1171,11 @@ export function App() {
           }}
           onListProjectBackups={listProjectBackups}
           onCreateProjectBackup={createProjectBackup}
+          onBackup={() => { setSettingsOpen(false); setExportOpen(true); }}
           onRestoreProjectBackup={restoreProjectBackup}
           directorySettings={
             !isDesktop ? (
-              <LocalFolderSettings projectId={projectId} onChange={refresh} />
+              <LocalFolderSettings projectId={projectId} projectRoot={snapshot?.project.root} onChange={refresh} />
             ) : undefined
           }
           onSave={async (patch) => {
@@ -1307,6 +1210,14 @@ export function App() {
           snapshot={snapshot}
           canExportFolder={isDesktop}
           onClose={() => setExportOpen(false)}
+          onBackup={async (includeTrash) => {
+            if (document.querySelector('[data-editing-dirty="true"]'))
+              throw new Error("请先等待文字或画布保存完成，并提交正在填写的批注，再创建完整备份");
+            const result = await run(isDesktop ? "createProjectBackup" : "exportBackup", { projectId, includeTrash });
+            try { localStorage.setItem(`weave.last-backup.${projectId}`, JSON.stringify({ createdAt: result.createdAt, assetCount: result.assetCount })); } catch {}
+            notify(isDesktop ? `备份已校验并保存：${result.path || "项目备份区"}` : `备份已回读校验（${result.assetCount} 个原片，回收站 ${result.trashCount} 个），请在下载列表确认文件已保存`);
+            setExportOpen(false);
+          }}
           onExport={async (options) => {
             const storyboardFiles = options.include.storyboard
               ? await renderStoryboard(
@@ -1385,7 +1296,7 @@ export function App() {
         !(view === "library" && filter === "all") && (
           <div className="drop-overlay">
             <UploadSimple size={40} />
-            <h2>松开，保存到 {projectLabel(receiver) || "待整理"}</h2>
+            <h2>{receiver ? `松开，保存到 ${projectLabel(receiver)}` : "请先选择或新建项目"}</h2>
             <p>原文件会保留，重复素材会自动识别</p>
           </div>
         )}

@@ -26,6 +26,9 @@ const methods = new Set([
   "fetchRemote",
 ]);
 contextBridge.exposeInMainWorld("weaveDesktop", {
+  startAssetDrag(projectId, assetId) {
+    ipcRenderer.send("weave:drag-asset", { projectId, assetId });
+  },
   invoke(method, payload = {}) {
     if (!methods.has(method))
       return Promise.reject(new Error("Unknown desktop method"));

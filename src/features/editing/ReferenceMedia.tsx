@@ -3,6 +3,9 @@ import type { Asset, EditLink } from "../../types";
 import { useState } from "react";
 import { assetCategoryStyle } from "../../services/assetCategoryTheme";
 import {
+  prepareAudioDragFile,
+  prepareVideoDragFile,
+  startNativeAssetDrag,
   writeAssetDrag,
   writeMediaFileDrag,
   downloadOriginal,
@@ -13,6 +16,7 @@ import { AudioThumbnail } from "../../components/AudioThumbnail";
 
 export function ReferenceMedia({
   asset,
+  projectId,
   link,
   busy,
   onPrimary,
@@ -24,6 +28,7 @@ export function ReferenceMedia({
   onReorder,
 }: {
   asset: Asset;
+  projectId: string;
   link: EditLink;
   busy: boolean;
   onPrimary: () => void;
@@ -43,7 +48,22 @@ export function ReferenceMedia({
       data-preview-asset={asset.id}
       data-kind={asset.kind}
       draggable={!busy}
+      onPointerEnter={() => {
+        if (asset.kind === "audio") void prepareAudioDragFile(asset).catch(() => {});
+        if (asset.kind === "video") void prepareVideoDragFile(asset).catch(() => {});
+      }}
       onDragStart={(event) => {
+        // The parent paragraph handles text dragging and otherwise cancels dragstart.
+        // Keep media drags from reaching that handler.
+        event.stopPropagation();
+        if (startNativeAssetDrag(event, projectId, asset.id)) return;
+        if (asset.kind !== "image") {
+          const thumb = event.currentTarget.querySelector<HTMLElement>(".reference-thumb");
+          if (thumb) {
+            const bounds = thumb.getBoundingClientRect();
+            event.dataTransfer.setDragImage(thumb, Math.min(24, bounds.width / 2), Math.min(24, bounds.height / 2));
+          }
+        }
         writeAssetDrag(event.dataTransfer, members);
         writeMediaFileDrag(event.dataTransfer, members[0]);
       }}
@@ -80,7 +100,7 @@ export function ReferenceMedia({
         title="空格快速预览"
       >
         {asset.kind === "image" ? (
-          <img src={asset.url} alt={asset.name} loading="lazy" />
+          <img src={asset.url} alt={asset.name} loading="lazy" draggable />
         ) : asset.kind === "video" ? (
           <>
             <video

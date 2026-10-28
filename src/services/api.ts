@@ -105,7 +105,7 @@ export async function prepareFiles(
 export async function prepareRemote(url: string): Promise<ImportFile> {
   const parsed = new URL(url);
   if (!["https:", "http:"].includes(parsed.protocol))
-    throw new Error("请使用图片或视频的 http / https 地址");
+    throw new Error("请使用图片、视频或音频的 http / https 地址");
   if (isDesktop) return invoke("fetchRemote", { url });
   const response = await fetch(url, { credentials: "omit" });
   if (!response.ok) throw new Error("无法读取这个地址，请下载文件后拖入");
@@ -114,14 +114,14 @@ export async function prepareRemote(url: string): Promise<ImportFile> {
   const blob = await response.blob();
   if (blob.size > 100 * 1024 * 1024)
     throw new Error("直链素材超过 100 MB，请下载文件后拖入。");
-  if (!blob.type.startsWith("image/") && !blob.type.startsWith("video/"))
-    throw new Error("这不是直接的图片或视频地址，请下载文件后拖入");
-  const ext =
+  if (!blob.type.startsWith("image/") && !blob.type.startsWith("video/") && !blob.type.startsWith("audio/"))
+    throw new Error("这不是直接的图片、视频或音频地址，请下载文件后拖入");
+  const ext = ({ "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/x-wav": "wav" } as Record<string, string>)[blob.type] ||
     blob.type.split("/")[1]?.replace("jpeg", "jpg").split(";")[0] || "png";
+  let name = decodeURIComponent(parsed.pathname.split("/").pop() || "网页素材");
+  if (!/\.[a-z0-9]{2,5}$/i.test(name)) name += `.${ext}`;
   return {
-    name: decodeURIComponent(
-      parsed.pathname.split("/").pop() || `网页素材.${ext}`,
-    ),
+    name,
     blob,
     source: parsed.hostname,
   };

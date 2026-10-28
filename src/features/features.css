@@ -710,3 +710,7 @@ fieldset.feature-fields {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+.folder-advanced { margin-top: 4px; }
+.folder-advanced > summary { cursor: pointer; color: #687085; font-size: 12px; padding: 5px 0; }
+.folder-advanced > .feature-note { margin: 8px 0; }
+.folder-advanced > .feature-actions { margin: 8px 0; }

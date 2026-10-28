@@ -9,11 +9,13 @@ import {
   ArrowCounterClockwise,
   ArrowDown,
   Bell,
+  GridFour, Tray, Package, User, Mountains, PlayCircle, MusicNotes, SquaresFour, FilmStrip,
 } from "@phosphor-icons/react";
 import { AssetThumb } from "../components/AssetThumb";
 import { useOriginalGrid } from "../components/useOriginalGrid";
 import { AssetPreview } from "./AssetPreview";
 import { copyAssetImage } from "../services/assetOutbound";
+import { assetCategoryStyle } from "../services/assetCategoryTheme";
 import { hashBlob, readDiskFile } from "../services/directoryFiles";
 import {
   editSharedAsset,
@@ -65,7 +67,7 @@ export function SharedLibraryView({
   notificationsEnabled: boolean;
   onNotificationsChange: (enabled: boolean) => Promise<void>;
 }) {
-  const [group, setGroup] = useState<LibraryGroup | "all">("all");
+  const [group, setGroup] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [preview, setPreview] = useState<string>();
@@ -92,10 +94,25 @@ export function SharedLibraryView({
     setLimit(120);
   }, [updatesOnly, library.connection?.id]);
   const assets = library.snapshot?.assets || [];
+  const defaultGroups = [
+    { id: "uncategorized", label: "未分类", Icon: Tray }, { id: "all", label: "全部", Icon: GridFour },
+    { id: "product", label: "产品", Icon: Package }, { id: "character", label: "角色", Icon: User },
+    { id: "scene", label: "场景", Icon: Mountains }, { id: "video", label: "视频", Icon: PlayCircle },
+    { id: "audio", label: "音频", Icon: MusicNotes }, { id: "other", label: "其他", Icon: SquaresFour },
+    ...(assets.some(a => a.group === "storyboard") ? [{ id: "storyboard", label: "分镜", Icon: FilmStrip }] : []),
+  ];
+  const defaultFolderGroups = new Map(defaultGroups.filter(item => item.id !== "all").map(item => [item.label, item.id]));
+  const folderNames = [...new Set([...(library.snapshot?.folders || []), ...assets.map((asset) => asset.sourceFolder).filter((name): name is string => !!name)])]
+    .filter(name => name.trim() !== "道具" && !defaultFolderGroups.has(name.trim()))
+    .sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const selectedGroup = libraryGroups.find((item) => item.id === group);
   const shown = assets.filter(
     (asset) =>
       Boolean(asset.trashedAt) === trash &&
-      (group === "all" || asset.group === group) &&
+      (group === "all" || (group.startsWith("folder:")
+        ? asset.sourceFolder === group.slice(7)
+        : group === "uncategorized" ? asset.sourceFolder?.trim() === "道具" || (defaultFolderGroups.get(asset.sourceFolder?.trim() || "") || (asset.group === "prop" ? "uncategorized" : asset.group)) === "uncategorized"
+        : (defaultFolderGroups.get(asset.sourceFolder?.trim() || "") || asset.group) === group && asset.sourceFolder?.trim() !== "道具")) &&
       asset.name.toLowerCase().includes(search.toLowerCase()) &&
       (!locate || locate.includes(asset.id)),
   );
@@ -145,14 +162,18 @@ export function SharedLibraryView({
   const importImages = (files: File[]) =>
     work(async () => {
       if (!library.connection || library.connection.mode === "readonly")
-        throw new Error("请先连接可写的 Weave 公共库；现有目录仍保持只读");
+        throw new Error("请先连接可写的 映箱公共库；现有目录仍保持只读");
+      if (group === "video" || group === "audio") throw new Error("公共资产库目前只支持图片，请在图片分类下导入。");
       const inputs = [];
-      for (const file of files) inputs.push(await imageLibraryInput(file));
+      for (const file of files) {
+        const input = await imageLibraryInput(file);
+        inputs.push(group.startsWith("folder:") ? { ...input, sourceFolder: group.slice(7) } : input);
+      }
       const result = await publishToLibrary(
         library.connection.handle,
         clientId,
         inputs,
-        group === "all" ? undefined : group,
+        selectedGroup?.id,
       );
       notify(
         `公共库已新增 ${result.added} 张图片${result.duplicates ? `，跳过 ${result.duplicates} 张重复图片` : ""}`,
@@ -234,29 +255,16 @@ export function SharedLibraryView({
           <details className="public-connect">
             <summary>
               <FolderOpen size={16} />
-              {library.connection ? "更改目录" : "连接目录"}
+              {library.connection ? "更换共享文件夹" : "连接共享文件夹"}
             </summary>
             <div>
               <button
                 disabled={library.busy || busy}
                 onClick={() => void library.connect("managed")}
               >
-                {library.connection
-                  ? "选择其他 Weave 公共库"
-                  : "打开 Weave 公共库"}
+                选择共享文件夹（可编辑）
               </button>
-              <button
-                disabled={library.busy || busy}
-                onClick={() => void library.connect("create")}
-              >
-                在所选目录下新建公共库
-              </button>
-              <button
-                disabled={library.busy || busy}
-                onClick={() => void library.connect("readonly")}
-              >
-                关联现有图片目录（只读）
-              </button>
+              <p className="feature-note">同事选择同一个共享文件夹。首次连接会创建管理文件并复制收录已有图片；原图保留，软件内操作不会同步修改这些原图。</p>
               {library.connection && (
                 <button onClick={() => void library.disconnect()}>
                   断开连接（不删文件）
@@ -300,21 +308,30 @@ export function SharedLibraryView({
         />
       ) : (
         <>
-          <div className="library-controls">
-            <div className="category-tabs">
-              {[{ id: "all", label: "全部" }, ...libraryGroups].map((item) => (
+          <div className="library-controls public-library-controls">
+            <div className="public-category-rows">
+            <div className="category-tabs library-category-tabs">
+              {defaultGroups.map((item) => (
                 <button
                   key={item.id}
-                  className={group === item.id ? "active" : ""}
+                  className={`${group === item.id ? "active" : ""} ${item.id === "all" ? "category-divider-after" : ""}`}
+                  data-category={item.id === "all" ? undefined : item.id}
+                  style={item.id === "all" ? undefined : assetCategoryStyle(item.id)}
+                  aria-pressed={group === item.id}
+                  title={item.id === "video" || item.id === "audio" ? "公共资产库目前只支持图片" : `查看${item.label}`}
                   onClick={() => {
-                    setGroup(item.id as LibraryGroup | "all");
+                    setGroup(item.id);
                     setSelected([]);
                     setLimit(120);
                   }}
                 >
-                  {item.label}
+                  <item.Icon size={14} aria-hidden="true" />{item.label}
                 </button>
               ))}
+            </div>
+            {folderNames.length > 0 && <div className="public-folder-row"><span>文件夹</span><div className="category-tabs public-folder-tabs">
+              {folderNames.map(name => <button key={name} type="button" className={group === `folder:${name}` ? "active" : ""} aria-pressed={group === `folder:${name}`} onClick={() => { setGroup(`folder:${name}`); setSelected([]); setLimit(120); }}><FolderOpen size={14} />{name}</button>)}
+            </div></div>}
             </div>
             <div className="toolbar-controls">
               <input
@@ -355,16 +372,16 @@ export function SharedLibraryView({
                 <h2>
                   {locate
                     ? "这些素材暂不可查看"
-                    : library.connection
+                    : group === "video" || group === "audio" ? "公共库暂无此类型素材" : library.connection
                       ? "这里还没有素材"
                       : "连接公共资产库"}
                 </h2>
                 <p>
                   {locate
                     ? "可能已移入回收站或目录暂不可访问，通知记录会保留。"
-                    : library.connection
+                    : group === "video" || group === "audio" ? "公共资产库目前只支持图片，视频和音频请保存在项目中。" : library.connection
                       ? "在本地项目中选中图片，点击「收录到公共库」。"
-                      : "同事连接同一个共享目录；现有图片目录可只读关联，不会被重排。"}
+                      : "选择共享文件夹；同事连接同一个文件夹即可一起管理图片。"}
                 </p>
               </div>
             )}
@@ -375,7 +392,7 @@ export function SharedLibraryView({
               {shown.slice(0, limit).map((asset) => (
                 <AssetThumb
                   key={asset.id}
-                  asset={asset}
+                  asset={{ ...asset, category: asset.group === "prop" || asset.sourceFolder === "道具" ? "uncategorized" : asset.group === "product" ? "product" : asset.category }}
                   display={display}
                   selected={selected.includes(asset.id)}
                   canPreview={!trash && !!asset.url}
@@ -472,7 +489,7 @@ export function SharedLibraryView({
                           libraryId: asset.libraryId,
                           assetId: asset.id,
                           revision: asset.head,
-                          category: asset.category,
+                          category: asset.group === "prop" || asset.sourceFolder === "道具" ? "uncategorized" : asset.group === "product" ? "product" : asset.category,
                         });
                       }
                       await onAdd(files, origins);
@@ -510,7 +527,7 @@ export function SharedLibraryView({
                       }
                     >
                       <option value="">归类到…</option>
-                      {libraryGroups.map((item) => (
+                      {libraryGroups.filter((item) => item.id !== "prop").map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.label}
                         </option>

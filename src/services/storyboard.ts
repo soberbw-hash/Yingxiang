@@ -47,7 +47,7 @@ export async function renderStoryboard(
     labels &&
     !(await document.fonts.load('400 24px "Weave HarmonyOS Sans"')).length
   )
-    throw new Error("鸿蒙字体未能加载，请重新打开 Weave 后再导出分镜文字。");
+    throw new Error("鸿蒙字体未能加载，请重新打开映箱 后再导出分镜文字。");
   const files: { name: string; bytes: number[] }[] = [];
   const cellWidth = 640,
     cellHeight = 360,

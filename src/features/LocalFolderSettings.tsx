@@ -18,9 +18,11 @@ import {
 
 export function LocalFolderSettings({
   projectId,
+  projectRoot,
   onChange,
 }: {
   projectId?: string;
+  projectRoot?: string;
   onChange: () => Promise<unknown>;
 }) {
   const [folders, setFolders] = useState<FolderConnection[]>([]);
@@ -84,41 +86,37 @@ export function LocalFolderSettings({
   };
   return (
     <fieldset className="feature-fields" disabled={busy}>
-      <legend>本地项目目录</legend>
+      <legend>当前项目</legend>
+      {(!window.isSecureContext || !("showDirectoryPicker" in window)) && <p className="feature-note">{directoryAccessMessage()}</p>}
       <p className="feature-note">
-        目录连接选择后立即生效，不由底部「保存设置」控制。
+        {!projectId ? "请先选择项目。" : current ? `保存在文件夹：${current.name}` : projectRoot?.startsWith("directory:") ? "项目文件夹暂未连接，请重新打开项目文件夹。" : "保存在此浏览器"}
       </p>
-      <p className="feature-note">{directoryAccessMessage()}</p>
-      <p className="feature-note">
-        {root
-          ? `新项目目录：${root.name}`
-          : "尚未选择。原有项目继续保存在浏览器，不会自动迁移。"}
-      </p>
-      {current && (
-        <p className="feature-note">
-          当前项目：{current.name} · 每次修改先写文件夹，浏览器只作工作缓存
-        </p>
-      )}
       <div className="feature-actions">
-        <button type="button" onClick={() => void choose("root")}>
-          {root ? "更改新项目默认目录" : "选择新项目保存目录"}
-        </button>
-        <button type="button" onClick={() => void choose("open")}>
-          打开目录项目
-        </button>
         <button
           type="button"
           disabled={!projectId}
+          title="复制并校验当前项目后切换位置，原位置保留"
           onClick={() => void choose("relocate")}
         >
-          更改当前项目保存位置
+          更改保存位置
+        </button>
+      </div>
+      <details className="folder-advanced">
+        <summary>更多目录操作</summary>
+        <p className="feature-note">{root ? `新项目默认目录：${root.name}` : "新项目默认保存在浏览器。"}</p>
+        <div className="feature-actions">
+        <button type="button" onClick={() => void choose("root")} title="只影响之后新建的项目，不移动已有项目">
+          {root ? "更改新项目默认目录" : "设置新项目默认目录"}
+        </button>
+        <button type="button" onClick={() => void choose("open")}>
+          打开文件夹项目
         </button>
         <button
           type="button"
           disabled={!projectId}
           onClick={() => void choose("save")}
         >
-          当前项目另存到目录
+          另存当前项目副本
         </button>
         {(root || current) && (
           <button
@@ -177,13 +175,9 @@ export function LocalFolderSettings({
             恢复浏览器保存（不删除文件）
           </button>
         )}
-      </div>
-      <p className="feature-note">
-        更改位置会在所选目录内创建项目文件夹，完整复制校验后切换，旧目录不删除。网页打开时每
-        20
-        秒检查新文件，按中文目录分类；外部内容替换收录为新素材。受管理原片的改名、移动或损坏只提示异常，不覆盖旧记录。_Weave
-        请勿手动修改。
-      </p>
+        </div>
+        <p className="feature-note">目录操作需要浏览器授权。更改位置或另存时，原项目会保留。请勿手动修改 _Weave 和受管理原片。</p>
+      </details>
       {error && (
         <p role="alert" className="feature-error">
           {error}

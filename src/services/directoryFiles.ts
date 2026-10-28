@@ -251,7 +251,7 @@ export async function readCommits<T>(
     }
     if (commit.format !== "weave-disk-commit" || commit.schemaVersion !== 1)
       throw new Error(
-        "此目录使用了更新或未知的数据格式，请更新 Weave；未修改数据",
+        "此目录使用了更新或未知的数据格式，请更新映箱；未修改数据",
       );
     const { checksum, ...content } = commit;
     if (
