@@ -13,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import { AssetThumb } from "../components/AssetThumb";
 import { useOriginalGrid } from "../components/useOriginalGrid";
+import { publicAssetCategory, publicFolderCategory } from "../services/publicLibraryCategories";
 import { AssetPreview } from "./AssetPreview";
 import { copyAssetImage } from "../services/assetOutbound";
 import { assetCategoryStyle } from "../services/assetCategoryTheme";
@@ -99,11 +100,10 @@ export function SharedLibraryView({
     { id: "product", label: "产品", Icon: Package }, { id: "character", label: "角色", Icon: User },
     { id: "scene", label: "场景", Icon: Mountains }, { id: "video", label: "视频", Icon: PlayCircle },
     { id: "audio", label: "音频", Icon: MusicNotes }, { id: "other", label: "其他", Icon: SquaresFour },
-    ...(assets.some(a => a.group === "storyboard") ? [{ id: "storyboard", label: "分镜", Icon: FilmStrip }] : []),
+    ...(assets.some(a => a.group === "storyboard" || publicFolderCategory(a.sourceFolder) === "storyboard") || library.snapshot?.folders?.some(name => publicFolderCategory(name) === "storyboard") ? [{ id: "storyboard", label: "分镜", Icon: FilmStrip }] : []),
   ];
-  const defaultFolderGroups = new Map(defaultGroups.filter(item => item.id !== "all").map(item => [item.label, item.id]));
   const folderNames = [...new Set([...(library.snapshot?.folders || []), ...assets.map((asset) => asset.sourceFolder).filter((name): name is string => !!name)])]
-    .filter(name => name.trim() !== "道具" && !defaultFolderGroups.has(name.trim()))
+    .filter(name => !publicFolderCategory(name))
     .sort((a, b) => a.localeCompare(b, "zh-CN"));
   const selectedGroup = libraryGroups.find((item) => item.id === group);
   const shown = assets.filter(
@@ -111,8 +111,7 @@ export function SharedLibraryView({
       Boolean(asset.trashedAt) === trash &&
       (group === "all" || (group.startsWith("folder:")
         ? asset.sourceFolder === group.slice(7)
-        : group === "uncategorized" ? asset.sourceFolder?.trim() === "道具" || (defaultFolderGroups.get(asset.sourceFolder?.trim() || "") || (asset.group === "prop" ? "uncategorized" : asset.group)) === "uncategorized"
-        : (defaultFolderGroups.get(asset.sourceFolder?.trim() || "") || asset.group) === group && asset.sourceFolder?.trim() !== "道具")) &&
+        : publicAssetCategory(asset) === group)) &&
       asset.name.toLowerCase().includes(search.toLowerCase()) &&
       (!locate || locate.includes(asset.id)),
   );
