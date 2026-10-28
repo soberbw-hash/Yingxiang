@@ -161,7 +161,7 @@ export function useSharedLibrary(
       )) return;
       if (mode === "create")
         handle = await handle.getDirectoryHandle(
-          `Weave公共资产库__${crypto.randomUUID().slice(0, 8)}`,
+          `映箱公共资产库__${crypto.randomUUID().slice(0, 8)}`,
           { create: true },
         );
       const sameReadOnly =
