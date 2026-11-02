@@ -14,6 +14,7 @@ import {
   UploadSimple,
   X,
   MagnifyingGlass,
+  Keyboard,
 } from "@phosphor-icons/react";
 import { useWorkspace } from "./store";
 import { projectLabel } from "../shared/workspace-labels.mjs";
@@ -63,9 +64,12 @@ import type { BackupInfo } from "./services/projectArchive";
 import { PublishToLibraryDialog } from "./features/PublishToLibraryDialog";
 import { folderConnections } from "./services/folderConnections";
 import "./features/features.css";
+import { KeyboardShortcuts } from "./features/KeyboardShortcuts";
+import "./features/workspace-polish.css";
 
 type View = "projects" | "library" | "shots" | "activity" | "trash" | "public";
 export function App() {
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const saveStatus = useSaveStatus();
   const {
     projects,
@@ -436,6 +440,16 @@ export function App() {
   });
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && !document.querySelector("dialog[open]")) {
+        const label = view === "shots" ? "搜索文稿与批注" : view === "public" ? "搜索公共素材" : view === "projects" ? "搜索项目" : "搜索素材";
+        const field = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+        if (field) { event.preventDefault(); field.focus(); field.select(); }
+        return;
+      }
+      if (event.key === "?" && !document.querySelector("dialog[open]") && !(event.target as HTMLElement)?.closest('input,textarea,select,[contenteditable="true"]')) {
+        event.preventDefault(); setShortcutsOpen(true); return;
+      }
       if (
         (event.target as HTMLElement).closest(
           'input,textarea,select,button,summary,dialog,[contenteditable="true"]',
@@ -450,12 +464,6 @@ export function App() {
         view === "activity"
       )
         return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        document
-          .querySelector<HTMLInputElement>('input[aria-label="搜索素材"]')
-          ?.focus();
-      }
       if (event.code === "Space" && selection[0]) {
         event.preventDefault();
         const asset = snapshot?.assets.find(
@@ -602,6 +610,7 @@ export function App() {
     content = (
       <ProjectHome
         projects={projects}
+        currentProjectId={projectId}
         desktop={isDesktop}
         folderName={projectRootName}
         onCreate={() => setNewProject("")}
@@ -825,10 +834,14 @@ export function App() {
       }}
     >
       {importNaming.dialog}
+      {shortcutsOpen && <KeyboardShortcuts onClose={() => setShortcutsOpen(false)} />}
       {quickPreview.asset && (
         <QuickPreview
           key={quickPreview.asset.id}
           asset={quickPreview.asset}
+          onPrevious={quickPreview.previous}
+          onNext={quickPreview.next}
+          position={quickPreview.total > 1 ? `${quickPreview.index + 1} / ${quickPreview.total}` : undefined}
           onClose={quickPreview.close}
           onDetails={() => {
             setPreviewId(quickPreview.asset!.id);
@@ -923,6 +936,7 @@ export function App() {
         </div>
         </>}
         <div className="sidebar-bottom">
+          <button className="nav-button" title="快捷键 · ?" aria-label="快捷键" onClick={() => setShortcutsOpen(true)}><Keyboard size={18} /><span>快捷键</span></button>
           <button
             className={`nav-button ${view === "activity" ? "active" : ""}`}
             title="公共素材库的新增记录"

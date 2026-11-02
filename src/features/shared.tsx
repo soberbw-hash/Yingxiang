@@ -28,7 +28,7 @@ export function FeatureDialog({
     dialog?.showModal();
     dialog
       ?.querySelector<HTMLTextAreaElement>(
-        ".editing-paste textarea,.import-naming input",
+        ".editing-paste textarea,.import-naming input,.navigator-search input",
       )
       ?.focus();
     return () => {

@@ -10,6 +10,7 @@ import {
   FolderOpen,
   MusicNote,
   Scissors,
+  ListBullets,
 } from "@phosphor-icons/react";
 import type { Asset, EditAction, EditDocument, ProjectSnapshot } from "../types";
 import {
@@ -35,6 +36,9 @@ import { DocumentHistory } from "./editing/DocumentHistory";
 import { VideoDeliveryList } from "./editing/VideoDeliveryList";
 import { useWorkspaceScroll } from "./useWorkspaceScroll";
 import { readScrollBookmark } from "../services/workspacePreferences";
+import { matchesSearch } from "../services/workspaceSearch";
+import { ParagraphNavigator } from "./editing/ParagraphNavigator";
+import { useDismissibleDetails } from "./useDismissibleDetails";
 
 export function EditingWorkspace({
   active = true,
@@ -88,6 +92,10 @@ export function EditingWorkspace({
   const draftTexts = useRef(new Map<string, string>());
   const [draftCount, setDraftCount] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const moreRef = useRef<HTMLDetailsElement>(null);
+  useDismissibleDetails(moreRef);
+  const [jumpTo, setJumpTo] = useState("");
   const [deliveryMode, setDeliveryMode] = useState<"videos" | "handoff">("videos");
   const scrollRef = useRef<HTMLDivElement>(null);
   useWorkspaceScroll(scrollRef, `${projectId}:editing`, active, doc?.id || "empty");
@@ -111,10 +119,18 @@ export function EditingWorkspace({
   }, [doc, snapshot.assets]);
   const visible = paragraphs.filter(
     (p) =>
-      (!search ||
-        p.text.includes(search) ||
-        p.notes.some((n) => n.text.includes(search))),
+      matchesSearch(search, p.text, ...p.notes.map(n => n.text)),
   );
+  useEffect(() => {
+    if (!jumpTo || navigationOpen) return;
+    const element = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-paragraph-id]") || []).find(item => item.dataset.paragraphId === jumpTo);
+    if (!element) return;
+    element.scrollIntoView({ block: "start", behavior: "instant" });
+    element.querySelector<HTMLButtonElement>(".paragraph-number")?.focus({ preventScroll: true });
+    element.classList.add("is-located");
+    const timer = window.setTimeout(() => { element.classList.remove("is-located"); setJumpTo(""); }, 1800);
+    return () => { clearTimeout(timer); element.classList.remove("is-located"); };
+  }, [jumpTo, navigationOpen]);
   const mergeIndexes = mergeSelection.map(id => paragraphs.findIndex(p => p.id === id)).sort((a, b) => a - b);
   const canMergeSelected = mergeIndexes.length >= 2 && mergeIndexes[0] >= 0 && mergeIndexes.every((index, offset) => offset === 0 || index === mergeIndexes[offset - 1] + 1);
   const mergeSelected = () => {
@@ -355,6 +371,13 @@ export function EditingWorkspace({
         else setError("请先点段落旁的「添加素材」，再粘贴图片");
       }}
     >
+      {navigationOpen && <ParagraphNavigator paragraphs={paragraphs} onClose={() => setNavigationOpen(false)} onJump={id => {
+        if (document.querySelector('.editing-workspace [data-editing-dirty="true"]')) return false;
+        const index = paragraphs.findIndex(paragraph => paragraph.id === id);
+        if (index < 0) return false;
+        setSearch(""); setLimit(Math.max(50, index + 10)); setJumpTo(id);
+        return true;
+      }} />}
       <header className="editing-toolbar">
         <div>
           <h1>剪辑对照</h1>
@@ -363,6 +386,7 @@ export function EditingWorkspace({
           </span>
         </div>
         <div className="editing-actions">
+          <button disabled={!paragraphs.length} onClick={() => setNavigationOpen(true)} title="按编号或正文快速定位段落"><ListBullets size={16} />段落导航</button>
           {doc && <input
             className="editing-document-search"
             aria-label="搜索文稿与批注"
@@ -415,7 +439,7 @@ export function EditingWorkspace({
             <Download size={16} />
             导出视频 / 交接
           </button>
-          {doc && <details className="editing-more">
+          {doc && <details className="editing-more" ref={moreRef}>
             <summary>更多</summary>
             <div>
               <button disabled={!doc.sources.length} onClick={() => setSources(true)}>原始文稿</button>
@@ -525,7 +549,7 @@ export function EditingWorkspace({
               />
             ))}
             {!!paragraphs.length && !visible.length && (
-              <p className="editing-empty">没有符合条件的段落</p>
+              <div className="editing-empty"><p>没有符合条件的段落</p><button onClick={() => setSearch("")}>清除搜索</button></div>
             )}
             {visible.length > limit && (
               <button

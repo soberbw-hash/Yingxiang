@@ -1,15 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { X, Info, DownloadSimple } from "@phosphor-icons/react";
+import { X, Info, DownloadSimple, CaretLeft, CaretRight } from "@phosphor-icons/react";
 import type { Asset } from "../types";
 import { downloadOriginal } from "../services/assetOutbound";
 
 export function useQuickPreview(assets: Asset[]) {
   const [id, setId] = useState("");
+  const [sequence, setSequence] = useState<string[]>([]);
   const latest = useRef(assets),
     hovered = useRef("");
   latest.current = assets;
   const active = useRef(id);
   active.current = id;
+  const open = (asset: Asset) => {
+    const visibleIds = Array.from(document.querySelectorAll<HTMLElement>("[data-preview-asset]"))
+      .filter(element => element.getClientRects().length > 0).map(element => element.dataset.previewAsset!);
+    const ids = [...new Set(visibleIds)].filter(value => latest.current.some(item => item.id === value && !item.trashedAt && item.kind !== "document"));
+    setSequence(ids.includes(asset.id) ? ids : [asset.id]);
+    setId(asset.id);
+  };
+  const openRef = useRef(open); openRef.current = open;
   useEffect(() => {
     const hover = (event: PointerEvent) => {
       const target =
@@ -41,7 +50,7 @@ export function useQuickPreview(assets: Asset[]) {
       if (!asset || asset.kind === "document") return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      setId(asset.id);
+      openRef.current(asset);
     };
     document.addEventListener("pointerover", hover);
     document.addEventListener("pointerout", hover);
@@ -52,9 +61,14 @@ export function useQuickPreview(assets: Asset[]) {
       window.removeEventListener("keydown", key, true);
     };
   }, []);
+  const available = sequence.filter(value => assets.some(asset => asset.id === value && !asset.trashedAt));
+  const index = available.indexOf(id);
   return {
     asset: assets.find((asset) => asset.id === id && !asset.trashedAt),
-    open: (asset: Asset) => setId(asset.id),
+    open,
+    index, total: available.length,
+    previous: index > 0 ? () => setId(available[index - 1]) : undefined,
+    next: index >= 0 && index < available.length - 1 ? () => setId(available[index + 1]) : undefined,
     close: () => setId(""),
   };
 }
@@ -62,10 +76,12 @@ export function QuickPreview({
   asset,
   onClose,
   onDetails,
+  onPrevious, onNext, position,
 }: {
   asset: Asset;
   onClose: () => void;
   onDetails: () => void;
+  onPrevious?: () => void; onNext?: () => void; position?: string;
 }) {
   const [error, setError] = useState("");
   const ref = useRef<HTMLDialogElement>(null);
@@ -86,6 +102,11 @@ export function QuickPreview({
         event.preventDefault();
         onClose();
       }}
+      onKeyDown={event => {
+        if ((event.target as HTMLElement).matches("input,textarea,video,audio")) return;
+        if (event.key === "ArrowLeft" && onPrevious) { event.preventDefault(); onPrevious(); }
+        if (event.key === "ArrowRight" && onNext) { event.preventDefault(); onNext(); }
+      }}
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -93,6 +114,11 @@ export function QuickPreview({
       <section className="quick-preview-panel">
         <header>
           <strong>{asset.name}</strong>
+          {position && <span className="quick-preview-position">{position}</span>}
+          {(onPrevious || onNext) && <>
+            <button disabled={!onPrevious} aria-label="预览上一个素材" title="上一个 · ←" onClick={onPrevious}><CaretLeft size={18} /></button>
+            <button disabled={!onNext} aria-label="预览下一个素材" title="下一个 · →" onClick={onNext}><CaretRight size={18} /></button>
+          </>}
           <button
             onClick={() => {
               try {

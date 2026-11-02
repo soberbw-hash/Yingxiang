@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import { Archive, FolderOpen, FolderSimple, Plus } from "@phosphor-icons/react";
+import { Archive, FolderOpen, FolderSimple, Plus, MagnifyingGlass, X } from "@phosphor-icons/react";
 import type { Project } from "../types";
 import { projectLabel } from "../../shared/workspace-labels.mjs";
 import { formatDate, formatSize } from "../types";
 import { parseProjectArchive, type PreparedProjectArchive } from "../services/projectArchive";
 import { FeatureDialog } from "../features/shared";
 import { readPreference } from "../services/workspacePreferences";
+import { matchesSearch } from "../services/workspaceSearch";
 export function ProjectHome({
   projects,
   onOpen,
@@ -14,6 +15,7 @@ export function ProjectHome({
   desktop,
   folderName,
   onRestoreArchive,
+  currentProjectId,
 }: {
   projects: Project[];
   onOpen: () => void;
@@ -22,11 +24,17 @@ export function ProjectHome({
   desktop: boolean;
   folderName?: string;
   onRestoreArchive?: (prepared: PreparedProjectArchive) => Promise<void>;
+  currentProjectId?: string;
 }) {
   const archiveInput = useRef<HTMLInputElement>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreError, setRestoreError] = useState("");
   const [prepared, setPrepared] = useState<PreparedProjectArchive>();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("recent");
+  const shown = projects.filter(project => matchesSearch(query, projectLabel(project)))
+    .sort((a, b) => sort === "name" ? projectLabel(a).localeCompare(projectLabel(b), "zh-CN")
+      : (sort === "created" ? b.createdAt : b.updatedAt || b.createdAt).localeCompare(sort === "created" ? a.createdAt : a.updatedAt || a.createdAt));
   return (
     <section className="project-home">
       <div className="view-heading">
@@ -66,10 +74,19 @@ export function ProjectHome({
           </button>
         </div>
       </div>
+      {!!projects.length && <div className="project-browser-tools">
+        <label className="project-search"><MagnifyingGlass size={16} aria-hidden="true" />
+          <input aria-label="搜索项目" placeholder="搜索项目名称" value={query} onChange={event => setQuery(event.target.value)} />
+          {query && <button type="button" aria-label="清除项目搜索" onClick={() => setQuery("")}><X size={15} /></button>}
+        </label>
+        {query && <span role="status">找到 {shown.length} 个项目</span>}
+        <select aria-label="项目排序" value={sort} onChange={event => setSort(event.target.value)}><option value="recent">最近更新</option><option value="name">名称排序</option><option value="created">最近创建</option></select>
+      </div>}
+      {query && !shown.length && <div className="empty-state project-search-empty"><MagnifyingGlass size={28} /><h2>没有找到这个项目</h2><p>试试项目名称中的其他词语。</p><button onClick={() => setQuery("")}>清除搜索</button></div>}
       <div className="project-grid">
-        {projects.map((p) => (
+        {shown.map((p) => (
           <button
-            className="project-card"
+            className={`project-card${p.id === currentProjectId ? " is-current-project" : ""}`}
             key={p.id}
             onClick={() => onSelect(p.id)}
           >
@@ -77,6 +94,7 @@ export function ProjectHome({
               <FolderSimple size={36} weight="duotone" />
             </div>
             <h3>{p.publicInbox ? "旧待整理素材（保留）" : projectLabel(p)}</h3>
+            {p.id === currentProjectId && <small className="project-current-badge">当前项目</small>}
             <p>{projectLocation(p.root)}</p>
             {p.unavailable ? <span>项目暂不可用 · 检查文件夹连接</span> : <>
               <span>{p.assetCount ?? 0} 个素材 · {p.paragraphCount ?? 0} 个文稿段落</span>
@@ -85,7 +103,7 @@ export function ProjectHome({
             </>}
           </button>
         ))}
-        <button className="project-card create-card" onClick={onCreate}>
+        {!query && <button className="project-card create-card" onClick={onCreate}>
           <Plus size={28} />
           <h3>新建项目</h3>
           <p>
@@ -95,7 +113,7 @@ export function ProjectHome({
                 ? `保存到本地目录 · ${folderName}`
                 : "保存在这台设备的浏览器"}
           </p>
-        </button>
+        </button>}
       </div>
       {restoreError && <p className="feature-error" role="alert">{restoreError}</p>}
       {prepared && <FeatureDialog title="确认恢复项目" onClose={() => setPrepared(undefined)} busy={restoreBusy}>

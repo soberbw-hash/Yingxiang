@@ -14,6 +14,8 @@ import {
 import { AssetThumb } from "../components/AssetThumb";
 import { useOriginalGrid } from "../components/useOriginalGrid";
 import { publicAssetCategory, publicFolderCategory } from "../services/publicLibraryCategories";
+import { matchesSearch } from "../services/workspaceSearch";
+import { useDismissibleDetails } from "./useDismissibleDetails";
 import { AssetPreview } from "./AssetPreview";
 import { copyAssetImage } from "../services/assetOutbound";
 import { assetCategoryStyle } from "../services/assetCategoryTheme";
@@ -85,6 +87,8 @@ export function SharedLibraryView({
   const [conflictChoice, setConflictChoice] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const connectRef = useRef<HTMLDetailsElement>(null);
+  useDismissibleDetails(connectRef);
   useEffect(() => {
     setSelected([]);
     setPreview(undefined);
@@ -94,6 +98,7 @@ export function SharedLibraryView({
     setError("");
     setLimit(120);
   }, [updatesOnly, library.connection?.id]);
+  useEffect(() => { setGroup("all"); setSearch(""); setTrash(false); }, [library.connection?.id]);
   const assets = library.snapshot?.assets || [];
   const defaultGroups = [
     { id: "uncategorized", label: "未分类", Icon: Tray }, { id: "all", label: "全部", Icon: GridFour },
@@ -112,7 +117,7 @@ export function SharedLibraryView({
       (group === "all" || (group.startsWith("folder:")
         ? asset.sourceFolder === group.slice(7)
         : publicAssetCategory(asset) === group)) &&
-      asset.name.toLowerCase().includes(search.toLowerCase()) &&
+      matchesSearch(search, asset.name, ...(asset.tags || []), asset.sourceFolder) &&
       (!locate || locate.includes(asset.id)),
   );
   useOriginalGrid(
@@ -251,7 +256,7 @@ export function SharedLibraryView({
               </button>
             </>
           )}
-          <details className="public-connect">
+          <details className="public-connect" ref={connectRef}>
             <summary>
               <FolderOpen size={16} />
               {library.connection ? "更换共享文件夹" : "连接共享文件夹"}
@@ -318,6 +323,7 @@ export function SharedLibraryView({
                   style={item.id === "all" ? undefined : assetCategoryStyle(item.id)}
                   aria-pressed={group === item.id}
                   title={item.id === "video" || item.id === "audio" ? "公共资产库目前只支持图片" : `查看${item.label}`}
+                  disabled={(item.id === "video" || item.id === "audio") && !assets.some(asset => publicAssetCategory(asset) === item.id)}
                   onClick={() => {
                     setGroup(item.id);
                     setSelected([]);
@@ -382,6 +388,7 @@ export function SharedLibraryView({
                       ? "在本地项目中选中图片，点击「收录到公共库」。"
                       : "选择共享文件夹；同事连接同一个文件夹即可一起管理图片。"}
                 </p>
+                {library.connection && (search || group !== "all" || locate) && <button onClick={() => { setSearch(""); setGroup("all"); setLocate(undefined); setSelected([]); }}>清除筛选</button>}
               </div>
             )}
             <div

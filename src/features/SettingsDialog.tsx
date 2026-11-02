@@ -185,7 +185,7 @@ export function SettingsDialog({
           </p>
         )}
         <footer className="feature-dialog-footer">
-          <span className="feature-note">带勾选项和 AI 配置需点击保存；目录操作即时生效。</span>
+          <span className="feature-note">{desktop ? "通知选项和 AI 配置需点击保存；目录操作即时生效。" : "AI 配置需点击保存；目录和通知操作即时生效。"}</span>
           <button type="button" onClick={onClose} disabled={busy}>
             取消
           </button>

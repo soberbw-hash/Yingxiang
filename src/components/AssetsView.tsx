@@ -43,6 +43,7 @@ import { AssetStackHistory } from "../features/AssetStackHistory";
 import { AssetCompareDialog } from "../features/AssetCompareDialog";
 import { readFavorites, readSavedSearches, readPreference, writePreference, type SavedLibrarySearch } from "../services/workspacePreferences";
 import { useWorkspaceScroll } from "../features/useWorkspaceScroll";
+import { matchesSearch } from "../services/workspaceSearch";
 
 const assetKindOrder: Record<Asset["kind"], number> = {
   image: 0,
@@ -181,9 +182,7 @@ export function AssetsView(props: Props) {
         (kind === "all" || a.kind === kind) &&
         (!favoritesOnly || favorites.includes(a.stackId || a.id)) &&
         (trash || a.status !== "rejected") &&
-        `${a.name} ${a.tags.join(" ")} ${a.prompt} ${a.source}`
-          .toLowerCase()
-          .includes(search.toLowerCase()),
+        matchesSearch(search, a.name, a.tags.join(" "), a.prompt, a.source),
     )
     .sort((a, b) =>
       sort === "name"
@@ -540,11 +539,12 @@ export function AssetsView(props: Props) {
                   : "把素材放进来，开始创作"}
             </h2>
             <p>
-              {trash
+              {base.length && (search || filter !== "all" || kind !== "all" || favoritesOnly)
+                ? "试试其他关键词，或清除筛选查看全部素材。" : trash
                 ? "删除的素材会保留在这里，可随时恢复。"
                 : favoritesOnly ? "点素材卡片上的星标加入收藏，也可以调整当前筛选。" : "拖入图片、视频或文件夹，也可以复制图片后按 Ctrl + V。"}
             </p>
-            {!trash && (
+            {!!base.length && (search || filter !== "all" || kind !== "all" || favoritesOnly) ? <button onClick={() => { props.onSearchChange(""); onFilter("all"); setKind("all"); setFavoritesOnly(false); onSelection([]); }}>清除筛选</button> : !trash && (
               <div>
                 <button className="primary-button" onClick={props.onImport}>
                   <UploadSimple size={16} />
