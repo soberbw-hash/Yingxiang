@@ -4,13 +4,13 @@
 
 ## 下载
 
-Windows 使用者请从 [Releases](https://github.com/soberbw-hash/Yingxiang/releases) 下载最新的 `Weave-Windows-v*.zip`，解压后运行 `Weave\Weave.exe`。这是便携版，不需要安装器；公司设备的执行和联网限制仍以 IT 策略为准。
+Windows 使用者请从 [Releases](https://github.com/soberbw-hash/Yingxiang/releases) 下载最新的 `Weave-Windows-v*.zip`，解压后双击 `映箱\映箱` 启动（程序本体在 `映箱\程序\` 里）。如果打不开，改试同目录的 `映箱-公司`，它关掉了几个容易被企业安全软件拦截的开关，具体见 [使用说明](使用说明.txt)。这是便携版，不需要安装器；公司设备的执行和联网限制仍以 IT 策略为准。
 
 浏览器版可从同一 Release 下载 `Weave-Browser.zip`。它使用当前浏览器本地存储，不具备桌面版的后台文件夹观察等能力。浏览器版不会与桌面版自动同步项目数据。
 
 ## 自动更新
 
-Windows 便携版启动时检查公开 Release。发现新版后自动下载 ZIP 并校验 SHA-256；之后请关闭软件，将 ZIP 内的 `Weave` 程序目录替换到原程序位置，再重新启动。项目数据保存在独立项目目录，不要覆盖项目目录。更新不请求管理员权限，也不会绕过公司安全策略。
+Windows 便携版启动时检查公开 Release。发现新版后自动下载 ZIP 并校验 SHA-256；之后请关闭软件，将 ZIP 内的 `映箱` 程序目录替换到原程序位置，再重新启动。项目数据保存在独立项目目录，不要覆盖项目目录。更新不请求管理员权限，也不会绕过公司安全策略。
 
 ## 从源码构建
 
@@ -23,7 +23,7 @@ pnpm test:updates
 pnpm package:desktop -- --zip
 ```
 
-打包脚本使用当前安装的 Windows Electron 运行时，在 `release/` 中生成便携目录和 ZIP。完整构建/验收说明见 [Windows 使用说明](WEAVE-使用说明.md) 与 [浏览器版说明](docs/BROWSER-EDITION.md)。
+打包脚本使用当前安装的 Windows Electron 运行时，在 `release/` 中生成便携目录和 ZIP。完整构建/验收说明见 [使用说明](使用说明.txt) 与 [浏览器版说明](docs/BROWSER-EDITION.md)。
 
 ## 项目数据
 

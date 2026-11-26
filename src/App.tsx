@@ -129,6 +129,7 @@ export function App() {
   ]);
   const importNaming = useImportNaming();
   const [newProject, setNewProject] = useState<string | undefined>();
+  const [newProjectError, setNewProjectError] = useState("");
   const [toast, setToast] = useState("");
   const notify = useCallback((message: string) => setToast(message), []);
   const [dragging, setDragging] = useState(false);
@@ -631,6 +632,14 @@ export function App() {
         }}
         onSelect={(id) => attempt(() => selectProject(id))}
         onRestoreArchive={restoreProjectArchive}
+        inboxPath={settings.inboxPath}
+        onChooseInbox={async () => {
+          await attempt(async () => {
+            const result = await run("chooseInbox");
+            if (!result?.canceled)
+              notify("已开始自动接收；这个文件夹里原有的文件不会重复导入");
+          });
+        }}
       />
     );
   else if (view === "shots" || view === "library" || view === "trash")
@@ -641,7 +650,7 @@ export function App() {
       <input type="checkbox" role="switch" aria-label="导入时命名" checked={importNaming.enabled} onChange={importNaming.toggle} />
       <span>导入时命名</span>
     </label>
-    {isDesktop && <button className="watch-status" onClick={() => setSettingsOpen(true)}>{settings.inboxPath ? `监听：${settings.inboxPath}` : "设置下载接收目录"}</button>}
+    {isDesktop && <button className="watch-status" title="素材自动接收设置" onClick={() => setSettingsOpen(true)}>{settings.inboxPath ? `自动接收：${settings.inboxPath}` : "设置自动接收文件夹"}</button>}
     <button className="primary-button" disabled={busy} onClick={pickFiles}><Plus size={16} />导入素材</button>
     <button title="导入图片、视频或音频直链" aria-label="导入图片、视频或音频直链" onClick={() => { setUrl(""); setUrlTarget(undefined); setUrlCategory(view === "library" && filter !== "all" ? filter : undefined); setUrlOpen(true); }}><ArrowRight size={17} /></button>
     <button title="导入文件夹" aria-label="导入文件夹" disabled={busy} onClick={() => folderInput.current?.click()}><FolderOpen size={17} /></button>
@@ -1069,18 +1078,24 @@ export function App() {
         <div className="modal-backdrop">
           <form
             className="small-modal"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              attempt(async () => {
-                const result = await run("createProject", {
-                  name: newProject.trim(),
-                });
-                if (!result?.canceled) {
-                  setNewProject(undefined);
-                  setView("library");
-                  notify("项目已创建");
-                }
-              });
+              const name = newProject.trim();
+              if (!name) return;
+              setNewProjectError("");
+              try {
+                const result = await run("createProject", { name });
+                if (result?.canceled) return;
+                setNewProject(undefined);
+                setView("library");
+                notify(
+                  result?.subfolder
+                    ? `已创建「${name}」，保存位置是所选文件夹里的「${result.subfolder}」`
+                    : "项目已创建",
+                );
+              } catch (reason) {
+                setNewProjectError(createProjectErrorText(reason));
+              }
             }}
           >
             <div className="modal-title">
@@ -1105,11 +1120,16 @@ export function App() {
             </label>
             <p>
               {isDesktop
-                ? "下一步选择保存位置，可以是本地目录或共享盘。"
+                ? "下一步选择保存位置。所选文件夹里已经有文件时，会在里面自动新建一个以项目名命名的文件夹。"
                 : projectRootName
                   ? `项目和素材保存到已授权本地目录「${projectRootName}」。`
                   : "项目和素材保存在浏览器中，可以在设置选择本地保存目录。"}
             </p>
+            {newProjectError && (
+              <p className="feature-error" role="alert">
+                {newProjectError}
+              </p>
+            )}
             <div className="modal-actions">
               <button type="button" onClick={() => setNewProject(undefined)}>
                 取消
@@ -1316,4 +1336,26 @@ export function App() {
         )}
     </div>
   );
+}
+
+// 主进程会把错误包成 "CODE: message"，这里翻译成用户能照着处理的话。
+function createProjectErrorText(reason: unknown) {
+  const raw = String((reason as Error)?.message || reason || "创建失败，请重试");
+  const code = raw.match(/^([A-Z_]+):\s*/)?.[1] || "";
+  const rest = raw.replace(/^[A-Z_]+:\s*/, "");
+  if (/Choose an empty project folder/.test(rest))
+    return "这个文件夹不能直接建项目（里面已有内容，且同名子文件夹也已存在）。请换一个文件夹，或先清空它。";
+  switch (code) {
+    case "EACCES":
+    case "EPERM":
+      return "这个位置没有写入权限，Windows 或公司安全策略不允许在这里建文件夹。请换一个位置，例如「文档」或桌面。";
+    case "ENOSPC":
+      return "磁盘空间不足，无法创建项目。";
+    case "ENOENT":
+      return "选择的文件夹已经不存在了，请重新选择。";
+    case "EXISTS":
+      return "这个位置不能用，请换一个文件夹再试。";
+    default:
+      return rest || "创建失败，请重试";
+  }
 }

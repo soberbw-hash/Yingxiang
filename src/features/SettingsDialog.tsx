@@ -87,10 +87,13 @@ export function SettingsDialog({
         }}
       >
         {desktop && <fieldset className="feature-fields settings-section" disabled={busy}>
-          <legend>素材接收</legend>
+          <legend>自动接收</legend>
+          <p className="feature-note">
+            指定一个文件夹后，放进去的新素材会自动进入「待整理」。这里只是读取，不会搬走或删除原文件；选择文件夹时里面已有的文件也不会被重复导入。
+          </p>
           <label>
-            新素材默认保存到
-            <input value={settings.inboxPath} readOnly />
+            接收文件夹
+            <input value={settings.inboxPath} readOnly placeholder="还没有选择" />
           </label>
             <button
               type="button"
@@ -107,7 +110,7 @@ export function SettingsDialog({
               }}
             >
               <FolderOpen />
-              选择接收文件夹
+              {settings.inboxPath ? "更换接收文件夹" : "选择接收文件夹"}
             </button>
         </fieldset>}
         <details className="settings-group" open>

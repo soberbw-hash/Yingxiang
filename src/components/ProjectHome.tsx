@@ -16,6 +16,8 @@ export function ProjectHome({
   folderName,
   onRestoreArchive,
   currentProjectId,
+  inboxPath,
+  onChooseInbox,
 }: {
   projects: Project[];
   onOpen: () => void;
@@ -25,6 +27,8 @@ export function ProjectHome({
   folderName?: string;
   onRestoreArchive?: (prepared: PreparedProjectArchive) => Promise<void>;
   currentProjectId?: string;
+  inboxPath?: string;
+  onChooseInbox?: () => Promise<void>;
 }) {
   const archiveInput = useRef<HTMLInputElement>(null);
   const [restoreBusy, setRestoreBusy] = useState(false);
@@ -84,25 +88,65 @@ export function ProjectHome({
       </div>}
       {query && !shown.length && <div className="empty-state project-search-empty"><MagnifyingGlass size={28} /><h2>没有找到这个项目</h2><p>试试项目名称中的其他词语。</p><button onClick={() => setQuery("")}>清除搜索</button></div>}
       <div className="project-grid">
-        {shown.map((p) => (
-          <button
-            className={`project-card${p.id === currentProjectId ? " is-current-project" : ""}`}
+        {shown.map((p) => {
+          const inbox = !!p.publicInbox;
+          return (
+          <div
+            className={`project-card${p.id === currentProjectId ? " is-current-project" : ""}${inbox ? " is-inbox" : ""}`}
             key={p.id}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(p.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(p.id);
+              }
+            }}
           >
             <div className="project-folder">
               <FolderSimple size={36} weight="duotone" />
             </div>
-            <h3>{p.publicInbox ? "旧待整理素材（保留）" : projectLabel(p)}</h3>
+            <h3>{projectLabel(p)}</h3>
             {p.id === currentProjectId && <small className="project-current-badge">当前项目</small>}
-            <p>{projectLocation(p.root)}</p>
-            {p.unavailable ? <span>项目暂不可用 · 检查文件夹连接</span> : <>
-              <span>{p.assetCount ?? 0} 个素材 · {p.paragraphCount ?? 0} 个文稿段落</span>
-              <span>最近更新 {formatDate(p.updatedAt || p.createdAt)}</span>
-              <span>{lastBackupLabel(p.id)}</span>
-            </>}
-          </button>
-        ))}
+            {inbox ? (
+              <div className="inbox-summary">
+                <p className="inbox-hint" title={inboxPath || undefined}>
+                  {inboxPath
+                    ? "自动接收这个文件夹里的新素材，再分给具体项目。"
+                    : "你下载的素材会先进这里，再分给具体项目。"}
+                </p>
+                <p className="inbox-path">{inboxPath || "还没有选择接收文件夹"}</p>
+                <div className="inbox-actions">
+                  {onChooseInbox && (
+                    <button
+                      type="button"
+                      className="inbox-choose"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onChooseInbox();
+                      }}
+                    >
+                      <FolderOpen size={15} />
+                      {inboxPath ? "更换接收文件夹" : "选择接收文件夹"}
+                    </button>
+                  )}
+                  <span className="inbox-count">{p.assetCount ?? 0} 个素材</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p>{projectLocation(p.root)}</p>
+                {p.unavailable ? <span>项目暂不可用 · 检查文件夹连接</span> : <>
+                  <span>{p.assetCount ?? 0} 个素材 · {p.paragraphCount ?? 0} 个文稿段落</span>
+                  <span>最近更新 {formatDate(p.updatedAt || p.createdAt)}</span>
+                  <span>{lastBackupLabel(p.id)}</span>
+                </>}
+              </>
+            )}
+          </div>
+          );
+        })}
         {!query && <button className="project-card create-card" onClick={onCreate}>
           <Plus size={28} />
           <h3>新建项目</h3>
@@ -142,7 +186,7 @@ export function ProjectHome({
         <div className="home-help">
           <strong>从一个项目开始</strong>
           <span>
-            创建后拖入素材，或在桌面端设置下载接收目录。项目内容可以完整打包带走。
+            创建后拖入素材，或在桌面端设置「自动接收文件夹」，下载的新素材会先进「待整理」。项目内容可以完整打包带走。
           </span>
         </div>
       )}

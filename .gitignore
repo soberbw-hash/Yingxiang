@@ -11,3 +11,7 @@ AGENTS.md
 !/docs/BROWSER-EDITION.md
 !/docs/EDITING-REFERENCE.md
 WEAVE-内部笔记.md
+release-build/
+build-out/
+build-v2/
+.preview/

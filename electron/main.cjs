@@ -21,8 +21,12 @@ const chokidar = require("chokidar");
 const { ProjectRepository, atomic } = require("./project-repository.cjs");
 const { fetchRemote } = require("./fetch-remote.cjs");
 const { InboxReceipts, overlap } = require("./inbox-receipts.cjs");
+const { resolveProjectRoot } = require("./project-location.cjs");
 const { applicationMenuTemplate } = require("./application-menu.cjs");
 const { checkLatestRelease, downloadRelease } = require("./update-service.cjs");
+// 应用图标：窗口、任务栏与托盘共用同一份 PNG（ICO 供安装包/快捷方式使用）。
+const APP_ICON = path.join(__dirname, "assets", "icon.png");
+const APP_ICON_SMALL = path.join(__dirname, "assets", "icon-256.png");
 const smokeReport = process.argv
   .find((a) => a.startsWith("--weave-smoke="))
   ?.slice("--weave-smoke=".length);
@@ -328,17 +332,22 @@ function updateTray() {
     return;
   }
   if (tray) return;
-  // A raw RGBA icon avoids relying on SVG support in Windows tray images.
-  const pixels = Buffer.alloc(16 * 16 * 4);
-  for (let i = 0; i < pixels.length; i += 4) {
-    pixels[i] = 98;
-    pixels[i + 1] = 87;
-    pixels[i + 2] = 217;
-    pixels[i + 3] = 255;
+  // 优先使用品牌图标；缺失时回退为纯色块，保证托盘始终可用。
+  const traySource = fs.existsSync(APP_ICON_SMALL) ? APP_ICON_SMALL : APP_ICON;
+  let trayImage;
+  if (fs.existsSync(traySource)) {
+    trayImage = nativeImage.createFromPath(traySource).resize({ width: 16, height: 16 });
+  } else {
+    const pixels = Buffer.alloc(16 * 16 * 4);
+    for (let i = 0; i < pixels.length; i += 4) {
+      pixels[i] = 98;
+      pixels[i + 1] = 87;
+      pixels[i + 2] = 217;
+      pixels[i + 3] = 255;
+    }
+    trayImage = nativeImage.createFromBuffer(pixels, { width: 16, height: 16 });
   }
-  tray = new Tray(
-    nativeImage.createFromBuffer(pixels, { width: 16, height: 16 }),
-  );
+  tray = new Tray(trayImage);
   tray.setToolTip("映箱");
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -369,6 +378,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: "#f6f7fb",
     title: "映箱",
+    ...(fs.existsSync(APP_ICON) ? { icon: APP_ICON } : {}),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -453,23 +463,26 @@ async function call(method, payload = {}) {
       if (payload.publicInbox)
         result = repo.createProject({ name: "待整理", publicInbox: true });
       else {
+        const name = String(payload.name || "").trim();
+        if (!name) throw new Error("请先填写项目名称。");
         const selected = await dialog.showOpenDialog(mainWindow, {
-          title: "选择空文件夹创建项目",
+          title: "选择项目保存位置",
+          buttonLabel: "在这里创建",
           properties: ["openDirectory", "createDirectory"],
         });
         if (selected.canceled) return { canceled: true };
-        if (
-          repo.settings().inboxPath &&
-          overlap(
-            fs.realpathSync(selected.filePaths[0]),
-            fs.realpathSync(repo.settings().inboxPath),
-          )
-        )
-          throw new Error("项目文件夹不能与收件箱重叠");
-        result = repo.createProject({
-          name: payload.name,
-          root: selected.filePaths[0],
-        });
+        const picked = selected.filePaths[0];
+        const inbox = repo.settings().inboxPath;
+        if (inbox && overlap(fs.realpathSync(picked), fs.realpathSync(inbox)))
+          throw new Error("这个位置和「自动接收文件夹」重叠了，请换一个文件夹。");
+        // 选中的文件夹里已经有东西时，自动在其中新建以项目名命名的子文件夹，
+        // 而不是报错卡在对话框上（默认情况下用户选的都是有素材的目录）。
+        const target = resolveProjectRoot(picked, name);
+        if (inbox && overlap(fs.realpathSync(target.root), fs.realpathSync(inbox)))
+          throw new Error("这个位置和「自动接收文件夹」重叠了，请换一个文件夹。");
+        result = repo.createProject({ name, root: target.root });
+        if (result && typeof result === "object")
+          result = { ...result, subfolder: target.subfolder };
       }
       break;
     }
@@ -515,7 +528,7 @@ async function call(method, payload = {}) {
     }
     case "chooseInbox": {
       const selected = await dialog.showOpenDialog(mainWindow, {
-        title: "选择收件箱文件夹",
+        title: "选择自动接收文件夹",
         properties: ["openDirectory", "createDirectory"],
       });
       if (selected.canceled) return { canceled: true };
@@ -772,6 +785,14 @@ else {
         try {
           repo.selectProject({ id: previous });
         } catch {}
+      } else {
+        // 不要把「待整理」自动设成当前项目：否则一打开软件就落在一个空的中转区里，
+        // 用户会以为这就是自己的工作项目。上次停在这里时同样回到项目列表。
+        repo.withLocalLock(() => {
+          const registry = repo.registry();
+          registry.activeProjectId = "";
+          atomic(repo.registryFile, registry);
+        });
       }
       installMediaProtocol();
       ipcMain.handle("weave:invoke", async (event, method, payload) => {
@@ -797,20 +818,21 @@ else {
             projectId: payload.projectId,
             id: payload.assetId,
           });
-          const pixels = Buffer.alloc(32 * 32 * 4);
-          for (let i = 0; i < pixels.length; i += 4) {
-            pixels[i] = 104;
-            pixels[i + 1] = 87;
-            pixels[i + 2] = 225;
-            pixels[i + 3] = 255;
+          // 拖拽时跟随光标的预览图，优先用品牌图标，缺失时退回纯色块
+          let dragIcon = nativeImage.createFromPath(APP_ICON_SMALL);
+          if (dragIcon.isEmpty()) {
+            const pixels = Buffer.alloc(32 * 32 * 4);
+            for (let i = 0; i < pixels.length; i += 4) {
+              pixels[i] = 104;
+              pixels[i + 1] = 87;
+              pixels[i + 2] = 225;
+              pixels[i + 3] = 255;
+            }
+            dragIcon = nativeImage.createFromBuffer(pixels, { width: 32, height: 32 });
+          } else {
+            dragIcon = dragIcon.resize({ width: 32, height: 32, quality: "best" });
           }
-          event.sender.startDrag({
-            file,
-            icon: nativeImage.createFromBuffer(pixels, {
-              width: 32,
-              height: 32,
-            }),
-          });
+          event.sender.startDrag({ file, icon: dragIcon });
         } catch (error) {
           console.warn("Native asset drag failed:", error.message);
         }

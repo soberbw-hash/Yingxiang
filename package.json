@@ -27,6 +27,7 @@
     "test:typography": "node --test tests/typography.test.mjs",
     "test:updates": "node --test tests/desktop-updates.test.cjs",
     "package:desktop": "npm run build && node scripts/package-desktop.mjs",
+    "ship:desktop": "node scripts/ship-desktop.mjs",
     "package:desktop:release": "npm run build && node scripts/package-desktop.mjs --zip --versioned"
   },
   "dependencies": {
@@ -45,6 +46,7 @@
     "concurrently": "9.1.2",
     "electron": "44.7.0",
     "fake-indexeddb": "6.2.4",
+    "resedit": "^3.1.0",
     "typescript": "5.7.3",
     "wait-on": "8.0.3"
   }

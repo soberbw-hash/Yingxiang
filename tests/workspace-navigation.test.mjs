@@ -73,7 +73,10 @@ test("staging entry is removed while legacy data remains reachable from projects
   assert.doesNotMatch(app, /ensureInbox|__inbox/);
   assert.match(app, /请先选择或新建项目，再导入素材/);
   const home = await readFile(new URL("../src/components/ProjectHome.tsx", import.meta.url), "utf8");
-  assert.match(home, /旧待整理素材（保留）/);
+  // 「待整理」在项目页统一用 projectLabel 显示；旧的「…（保留）」标签对所有
+  // 新用户都没有意义，不再出现。
+  assert.doesNotMatch(home, /旧待整理素材（保留）/);
+  assert.match(home, /projectLabel\(p\)/);
   assert.ok(
     sidebar.indexOf('className="sidebar-bottom"') <
       sidebar.indexOf("<span>通知</span>"),
